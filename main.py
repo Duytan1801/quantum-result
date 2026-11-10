@@ -22,6 +22,21 @@ LANGSEARCH_API_URL = os.getenv("LANGSEARCH_API_URL", "https://api.langsearch.com
 LANGSEARCH_API_KEY = os.getenv("LANGSEARCH_API_KEY")
 
 # ---------------------------------------------------------------------------
+# File system workspace (sandboxed)
+# ---------------------------------------------------------------------------
+BASE_DIR = os.path.join(os.getcwd(), "bot_files")
+os.makedirs(BASE_DIR, exist_ok=True)
+
+
+def safe_path(file_path: str) -> str:
+    """Resolve and validate that the path is within BASE_DIR."""
+    full_path = os.path.realpath(os.path.join(BASE_DIR, file_path))
+    base_real = os.path.realpath(BASE_DIR)
+    if full_path != base_real and not full_path.startswith(base_real + os.sep):
+        raise ValueError(f"Access denied: {file_path} is outside the workspace")
+    return full_path
+
+# ---------------------------------------------------------------------------
 # Tools: code execution + web search
 # ---------------------------------------------------------------------------
 TOOLS = [
@@ -53,6 +68,51 @@ TOOLS = [
                     "freshness": {"type": "string", "description": "Time filter: 'day', 'week', 'month', 'year', 'noLimit'", "default": "noLimit"},
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read the contents of a file from the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Path to the file to read (relative to workspace)"},
+                },
+                "required": ["file_path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Write content to a file in the workspace. Creates or overwrites the file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Path to the file to write (relative to workspace)"},
+                    "content": {"type": "string", "description": "Content to write to the file"},
+                },
+                "required": ["file_path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": "Edit a file by replacing old_string with new_string (first occurrence only).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Path to the file to edit"},
+                    "old_string": {"type": "string", "description": "Text to find and replace"},
+                    "new_string": {"type": "string", "description": "Text to replace old_string with"},
+                },
+                "required": ["file_path", "old_string", "new_string"],
             },
         },
     },
@@ -129,6 +189,59 @@ async def web_search(query: str, count: int = 5, freshness: str = "noLimit") -> 
             return f"LangSearch API error ({e.response.status_code}): {e.response.text}"
         except Exception as exc:
             return f"LangSearch error: {exc}"
+
+# ---------------------------------------------------------------------------
+# File system operations
+# ---------------------------------------------------------------------------
+async def read_file(file_path: str) -> str:
+    """Read the contents of a file from the workspace."""
+    try:
+        path = safe_path(file_path)
+    except ValueError as e:
+        return str(e)
+    if not os.path.exists(path):
+        return f"Error: File not found: {file_path}"
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as exc:
+        return f"Error reading file: {exc}"
+
+
+async def write_file(file_path: str, content: str) -> str:
+    """Write content to a file in the workspace. Creates/overwrites the file."""
+    try:
+        path = safe_path(file_path)
+    except ValueError as e:
+        return str(e)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return f"Successfully wrote {len(content)} characters to {file_path}"
+    except Exception as exc:
+        return f"Error writing file: {exc}"
+
+
+async def edit_file(file_path: str, old_string: str, new_string: str) -> str:
+    """Edit a file by replacing old_string with new_string (first occurrence only)."""
+    try:
+        path = safe_path(file_path)
+    except ValueError as e:
+        return str(e)
+    if not os.path.exists(path):
+        return f"Error: File not found: {file_path}"
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        if old_string not in content:
+            return f"Error: old_string not found in {file_path}"
+        new_content = content.replace(old_string, new_string, 1)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        return f"Successfully edited {file_path}"
+    except Exception as exc:
+        return f"Error editing file: {exc}"
 
 # ---------------------------------------------------------------------------
 # Supabase helpers (with graceful fallback for missing tool_calls columns)
@@ -244,7 +357,9 @@ def keep_alive():
 # ---------------------------------------------------------------------------
 # Groq streaming with tool calling
 # ---------------------------------------------------------------------------
-async def get_groq_response(user_id, user_message):
+MAX_AGENT_STEPS = 20
+
+async def get_groq_response(user_id, user_message, channel=None):
     history = await db_get_history(user_id)
     user_facts = await db_get_user_facts(user_id)
 
@@ -255,9 +370,11 @@ async def get_groq_response(user_id, user_message):
         facts_text = "\n\nUser facts you should remember:\n" + "\n".join(facts_lines)
 
     system_prompt = (
-        "You are a helpful assistant with code execution and web search abilities. "
+        "You are a helpful assistant with code execution, web search, and file management abilities. "
         "Use the code tool for calculations, data tasks, or when the user asks you to run code. "
-        "Use the web_search tool for current information, news, facts, or anything not in your training data."
+        "Use the web_search tool for current information, news, facts, or anything not in your training data. "
+        "Use the read_file, write_file, and edit_file tools to read, write, and edit files in the workspace. "
+        "Files are stored in a sandboxed workspace directory."
         + facts_text
     )
     messages = [{"role": "system", "content": system_prompt}]
@@ -287,7 +404,18 @@ async def get_groq_response(user_id, user_message):
 
     final_answer = ""
     
+    step_count = 0
+    
     while True:
+        if step_count >= MAX_AGENT_STEPS:
+            if channel:
+                await channel.send(f"⚠️ Reached maximum steps ({MAX_AGENT_STEPS}). Stopping.")
+            break
+        step_count += 1
+        
+        if channel and step_count > 1:
+            await channel.send(f"🔄 **Step {step_count}** - Continuing...")
+        
         stream = groq_client.chat.completions.create(
             model=GROQ_MODEL,
             messages=messages,
@@ -343,6 +471,19 @@ async def get_groq_response(user_id, user_message):
             break
         
         for idx, tc in tool_calls_accum.items():
+            tool_name = tc["name"]
+            
+            # Send status message for each tool
+            if channel:
+                status_messages = {
+                    "code": "💻 Running code...",
+                    "web_search": "🔍 Searching the web...",
+                    "read_file": "📖 Reading file...",
+                    "write_file": "📝 Writing file...",
+                    "edit_file": "✏️ Editing file...",
+                }
+                await channel.send(f"**Step {step_count}** - {status_messages.get(tool_name, f'Running {tool_name}...')}")
+            
             if tc["name"] == "code":
                 try:
                     args = json.loads(tc["arguments"])
@@ -380,6 +521,60 @@ async def get_groq_response(user_id, user_message):
                 })
                 await db_add_message(user_id, "tool", result, tool_call_id=tc["id"], name="web_search")
             
+            elif tc["name"] == "read_file":
+                try:
+                    args = json.loads(tc["arguments"])
+                    file_path = args.get("file_path", "")
+                except json.JSONDecodeError:
+                    result = "Error: Invalid JSON arguments for read_file tool"
+                else:
+                    result = await read_file(file_path)
+                
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "name": "read_file",
+                    "content": result,
+                })
+                await db_add_message(user_id, "tool", result, tool_call_id=tc["id"], name="read_file")
+            
+            elif tc["name"] == "write_file":
+                try:
+                    args = json.loads(tc["arguments"])
+                    file_path = args.get("file_path", "")
+                    content = args.get("content", "")
+                except json.JSONDecodeError:
+                    result = "Error: Invalid JSON arguments for write_file tool"
+                else:
+                    result = await write_file(file_path, content)
+                
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "name": "write_file",
+                    "content": result,
+                })
+                await db_add_message(user_id, "tool", result, tool_call_id=tc["id"], name="write_file")
+            
+            elif tc["name"] == "edit_file":
+                try:
+                    args = json.loads(tc["arguments"])
+                    file_path = args.get("file_path", "")
+                    old_string = args.get("old_string", "")
+                    new_string = args.get("new_string", "")
+                except json.JSONDecodeError:
+                    result = "Error: Invalid JSON arguments for edit_file tool"
+                else:
+                    result = await edit_file(file_path, old_string, new_string)
+                
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "name": "edit_file",
+                    "content": result,
+                })
+                await db_add_message(user_id, "tool", result, tool_call_id=tc["id"], name="edit_file")
+            
             else:
                 messages.append({
                     "role": "tool",
@@ -398,7 +593,7 @@ async def get_groq_response(user_id, user_message):
 @bot.command(name="ask")
 async def ask(ctx, *, question: str):
     async with ctx.typing():
-        answer = await get_groq_response(ctx.author.id, question)
+        answer = await get_groq_response(ctx.author.id, question, ctx.channel)
     if len(answer) > 1900:
         answer = answer[:1900] + "\n...(truncated)"
     await ctx.send(answer)
@@ -435,6 +630,53 @@ async def forget(ctx, key: str):
     await db_delete_fact(ctx.author.id, key)
     await ctx.send(f"Forgot {key}.")
 
+@bot.command(name="sendfile")
+async def send_file_cmd(ctx, file_path: str):
+    """Send a file from the workspace as a Discord attachment. Usage: !sendfile path/to/file.txt"""
+    try:
+        path = safe_path(file_path)
+    except ValueError as e:
+        await ctx.send(str(e))
+        return
+    if not os.path.exists(path):
+        await ctx.send(f"File not found: {file_path}")
+        return
+    try:
+        await ctx.send(file=discord.File(path))
+    except Exception as e:
+        await ctx.send(f"Error sending file: {e}")
+
+@bot.command(name="listfiles")
+async def list_files_cmd(ctx, directory: str = ""):
+    """List files in the workspace directory. Usage: !listfiles [subdir]"""
+    try:
+        target_dir = safe_path(directory) if directory else BASE_DIR
+    except ValueError as e:
+        await ctx.send(str(e))
+        return
+    if not os.path.isdir(target_dir):
+        await ctx.send(f"Not a directory: {directory}")
+        return
+    try:
+        entries = os.listdir(target_dir)
+        if not entries:
+            await ctx.send("Directory is empty")
+            return
+        lines = []
+        for entry in sorted(entries):
+            full = os.path.join(target_dir, entry)
+            if os.path.isdir(full):
+                lines.append(f"📁 {entry}/")
+            else:
+                size = os.path.getsize(full)
+                lines.append(f"📄 {entry} ({size} bytes)")
+        response = "\n".join(lines[:50])
+        if len(entries) > 50:
+            response += f"\n...and {len(entries) - 50} more"
+        await ctx.send(response)
+    except Exception as e:
+        await ctx.send(f"Error listing files: {e}")
+
 @bot.command(name="test_piston")
 async def test_piston(ctx):
     """Test if Piston sandbox is working. Usage: !test_piston"""
@@ -467,7 +709,7 @@ async def on_message(message):
         if not content:
             content = "Hello!"
         async with message.channel.typing():
-            answer = await get_groq_response(message.author.id, content)
+            answer = await get_groq_response(message.author.id, content, message.channel)
         if len(answer) > 1900:
             answer = answer[:1900] + "\n...(truncated)"
         await message.reply(answer)
