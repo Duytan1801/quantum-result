@@ -18,9 +18,6 @@ MAX_HISTORY = 10
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-DAYTONA_API_URL = os.getenv("DAYTONA_API_URL", "https://app.daytona.io/api")
-DAYTONA_API_KEY = os.getenv("DAYTONA_API_KEY")
-
 LANGSEARCH_API_URL = os.getenv("LANGSEARCH_API_URL", "https://api.langsearch.com/v1/web-search")
 LANGSEARCH_API_KEY = os.getenv("LANGSEARCH_API_KEY")
 
@@ -32,7 +29,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "code",
-            "description": "Execute code in a sandboxed Daytona environment. Use for calculations, data processing, API calls, etc.",
+            "description": "Execute code in a sandbox via Piston API. Use for calculations, data processing, API calls, etc.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -62,61 +59,31 @@ TOOLS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Daytona sandbox execution
+# Piston code execution
 # ---------------------------------------------------------------------------
-async def run_code_in_daytona(code: str, language: str = "python") -> str:
-    if not DAYTONA_API_KEY:
-        return "Error: DAYTONA_API_KEY not configured."
-
-    lang_cmd = {
-        "python": "python3 -c",
-        "python3": "python3 -c",
-        "javascript": "node -e",
-        "js": "node -e",
-        "bash": "bash -c",
-        "sh": "sh -c",
-    }
-    cmd_prefix = lang_cmd.get(language.lower(), "python3 -c")
-
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        headers = {"Authorization": f"Bearer {DAYTONA_API_KEY}"}
-        sandbox_id = None
+async def run_code_in_piston(code: str, language: str = "python") -> str:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         try:
-            create_resp = await client.post(
-                f"{DAYTONA_API_URL}/sandbox",
-                headers=headers,
-                json={"image": "daytonaio/sandbox:latest"},
+            resp = await client.post(
+                "https://emkc.org/api/v2/piston/execute",
+                json={
+                    "language": language,
+                    "version": "3.10.0" if language == "python" else "18.15.0",
+                    "files": [{"content": code}],
+                },
             )
-            create_resp.raise_for_status()
-            sandbox_id = create_resp.json()["id"]
-
-            try:
-                run_resp = await client.post(
-                    f"{DAYTONA_API_URL}/sandbox/{sandbox_id}/exec",
-                    headers=headers,
-                    json={"command": f'{cmd_prefix} {json.dumps(code)}'},
-                )
-                run_resp.raise_for_status()
-                result = run_resp.json()
-                stdout = result.get("stdout", "")
-                stderr = result.get("stderr", "")
-                exit_code = result.get("exit_code", 0)
-                output = stdout
-                if stderr:
-                    output += f"\n[stderr]: {stderr}"
-                if exit_code != 0:
-                    output += f"\n[exit code: {exit_code}]"
-                return output or "(no output)"
-            except httpx.HTTPStatusError as e:
-                return f"Daytona API error ({e.response.status_code}): {e.response.text}"
-            except Exception as exc:
-                return f"Daytona execution error: {exc}"
-        finally:
-            if sandbox_id:
-                try:
-                    await client.delete(f"{DAYTONA_API_URL}/sandbox/{sandbox_id}", headers=headers)
-                except Exception:
-                    pass
+            resp.raise_for_status()
+            result = resp.json()
+            output = result.get("output", "")
+            if result.get("stderr"):
+                output += f"\n[stderr]: {result['stderr']}"
+            if result.get("status", 0) != 0:
+                output += f"\n[exit code: {result['status']}]"
+            return output or "(no output)"
+        except httpx.HTTPStatusError as e:
+            return f"Piston API error ({e.response.status_code}): {e.response.text[:200]}"
+        except Exception as exc:
+            return f"Piston execution error: {exc}"
 
 # ---------------------------------------------------------------------------
 # LangSearch web search
@@ -384,7 +351,7 @@ async def get_groq_response(user_id, user_message):
                 except json.JSONDecodeError:
                     result = "Error: Invalid JSON arguments for code tool"
                 else:
-                    result = await run_code_in_daytona(code, language)
+                    result = await run_code_in_piston(code, language)
                 
                 messages.append({
                     "role": "tool",
@@ -439,7 +406,7 @@ async def ask(ctx, *, question: str):
 @bot.command(name="run")
 async def run_code(ctx, language: str = "python", *, code: str):
     async with ctx.typing():
-        result = await run_code_in_daytona(code, language)
+        result = await run_code_in_piston(code, language)
     if len(result) > 1900:
         result = result[:1900] + "\n...(truncated)"
     await ctx.send(f"```\n{result}\n```")
@@ -467,6 +434,15 @@ async def recall(ctx, key: str):
 async def forget(ctx, key: str):
     await db_delete_fact(ctx.author.id, key)
     await ctx.send(f"Forgot {key}.")
+
+@bot.command(name="test_piston")
+async def test_piston(ctx):
+    """Test if Piston sandbox is working. Usage: !test_piston"""
+    async with ctx.typing():
+        result = await run_code_in_piston("print('Piston sandbox is working!')", "python")
+    if len(result) > 1900:
+        result = result[:1900] + "\n...(truncated)"
+    await ctx.send(f"```\n{result}\n```")
 
 # ---------------------------------------------------------------------------
 # Events
