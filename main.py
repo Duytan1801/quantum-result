@@ -258,7 +258,8 @@ async def db_is_chat_mode_enabled(channel_id: str) -> bool:
                 .execute()
             )
         except Exception as e:
-            if "42703" in str(e) or "column" in str(e).lower() or "404" in str(e):
+            err = str(e).lower()
+            if "42703" in err or "column" in err or "404" in err or "table" in err or "pgrst205" in err:
                 return False
             raise
         return bool(resp.data and resp.data[0].get("enabled"))
@@ -269,10 +270,16 @@ async def db_is_chat_mode_enabled(channel_id: str) -> bool:
 async def db_set_chat_mode(channel_id: str, enabled: bool):
     """Enable or disable chat mode for a channel."""
     def _upsert():
-        supabase.table("chat_mode").upsert({
-            "channel_id": str(channel_id),
-            "enabled": enabled,
-        }, on_conflict="channel_id").execute()
+        try:
+            supabase.table("chat_mode").upsert({
+                "channel_id": str(channel_id),
+                "enabled": enabled,
+            }, on_conflict="channel_id").execute()
+        except Exception as e:
+            err = str(e).lower()
+            if "42703" in err or "column" in err or "404" in err or "table" in err or "pgrst205" in err:
+                return
+            raise
     await asyncio.to_thread(_upsert)
 
 
