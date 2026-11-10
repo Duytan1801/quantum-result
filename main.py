@@ -17,7 +17,6 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192")
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
-intents.direct_messages = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
