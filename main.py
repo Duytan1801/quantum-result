@@ -13,7 +13,7 @@ import httpx
 # Configuration
 # ---------------------------------------------------------------------------
 GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3-32b")
-MAX_HISTORY = 10
+MAX_HISTORY = 3
 
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -243,6 +243,42 @@ async def edit_file(file_path: str, old_string: str, new_string: str) -> str:
     except Exception as exc:
         return f"Error editing file: {exc}"
 
+except Exception as exc:
+        return f"Error editing file: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# Chat mode database helpers
+# ---------------------------------------------------------------------------
+async def db_is_chat_mode_enabled(channel_id: str) -> bool:
+    """Check if chat mode is enabled for a channel."""
+    def _fetch():
+        try:
+            resp = (
+                supabase.table("chat_mode")
+                .select("enabled")
+                .eq("channel_id", str(channel_id))
+                .execute()
+            )
+        except Exception as e:
+            if "42703" in str(e) or "column" in str(e).lower() or "404" in str(e):
+                return False
+            raise
+        return bool(resp.data and resp.data[0].get("enabled"))
+    result = await asyncio.to_thread(_fetch)
+    return result
+
+
+async def db_set_chat_mode(channel_id: str, enabled: bool):
+    """Enable or disable chat mode for a channel."""
+    def _upsert():
+        supabase.table("chat_mode").upsert({
+            "channel_id": str(channel_id),
+            "enabled": enabled,
+        }, on_conflict="channel_id").execute()
+    await asyncio.to_thread(_upsert)
+
+
 # ---------------------------------------------------------------------------
 # Supabase helpers (with graceful fallback for missing tool_calls columns)
 # ---------------------------------------------------------------------------
@@ -357,7 +393,7 @@ def keep_alive():
 # ---------------------------------------------------------------------------
 # Groq streaming with tool calling
 # ---------------------------------------------------------------------------
-MAX_AGENT_STEPS = 20
+MAX_AGENT_STEPS = 5
 
 async def get_groq_response(user_id, user_message, channel=None):
     history = await db_get_history(user_id)
@@ -373,7 +409,7 @@ async def get_groq_response(user_id, user_message, channel=None):
         "You are a helpful assistant with code execution, web search, and file management abilities. "
         "Use the code tool for calculations, data tasks, or when the user asks you to run code. "
         "Use the web_search tool for current information, news, facts, or anything not in your training data. "
-        "Use the read_file, write_file, and edit_file tools to read, write, and edit files in the workspace. "
+        "Use the read_file, write_file, and edit_file tools to read, write, and edit files in the workspace. Only call tools when necessary. Once you have gathered enough information to answer the user, provide the final answer directly without calling more tools. Do not call the same tool repeatedly - if one search or execution doesn\t give useful results, answer with what you have or try a different approach. "
         "Files are stored in a sandboxed workspace directory."
         + facts_text
     )
@@ -677,6 +713,25 @@ async def list_files_cmd(ctx, directory: str = ""):
     except Exception as e:
         await ctx.send(f"Error listing files: {e}")
 
+response = "\n".join(lines[:50])
+        if len(entries) > 50:
+            response += f"\n...and {len(entries) - 50} more"
+        await ctx.send(response)
+    except Exception as e:
+        await ctx.send(f"Error listing files: {e}")
+
+@bot.command(name="chatmode")
+async def chatmode(ctx, action: str):
+    """Toggle chat mode for this channel. Usage: !chatmode on|off"""
+    action = action.lower()
+    if action not in ("on", "off"):
+        await ctx.send("Usage: !chatmode on|off")
+        return
+    enabled = action == "on"
+    await db_set_chat_mode(str(ctx.channel.id), enabled)
+    status = "enabled" if enabled else "disabled"
+    await ctx.send(f"Chat mode {status} for this channel. The bot will now respond to all messages{' (no mention needed)' if enabled else ''}.")
+
 @bot.command(name="test_piston")
 async def test_piston(ctx):
     """Test if Piston sandbox is working. Usage: !test_piston"""
@@ -700,12 +755,14 @@ async def on_message(message):
         return
     await bot.process_commands(message)
 
-    if bot.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel):
-        content = (
-            message.content.replace(f"<@{bot.user.id}>", "")
-            .replace(f"<@!{bot.user.id}>", "")
-            .strip()
-        )
+    chat_on = await db_is_chat_mode_enabled(str(message.channel.id))
+    mentioned = bot.user.mentioned_in(message)
+    is_dm = isinstance(message.channel, discord.DMChannel)
+
+    if chat_on or mentioned or is_dm:
+        content = message.content
+        if mentioned:
+            content = content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
         if not content:
             content = "Hello!"
         async with message.channel.typing():
