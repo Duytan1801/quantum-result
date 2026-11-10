@@ -213,6 +213,7 @@ async def db_get_user_facts(user_id):
 
 
 async def db_add_message(user_id, role, content, tool_calls=None, tool_call_id=None, name=None):
+    content = content or ""
     def _insert():
         payload = {
             "user_id": str(user_id),
@@ -363,7 +364,7 @@ async def get_groq_response(user_id, user_message):
                 }
                 for tc in tool_calls_accum.values()
             ]
-            await db_add_message(user_id, "assistant", step_content or None, tool_calls=tool_calls_list)
+            await db_add_message(user_id, "assistant", step_content or "", tool_calls=tool_calls_list)
         else:
             await db_add_message(user_id, "assistant", step_content)
         
