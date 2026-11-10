@@ -243,9 +243,6 @@ async def edit_file(file_path: str, old_string: str, new_string: str) -> str:
     except Exception as exc:
         return f"Error editing file: {exc}"
 
-except Exception as exc:
-        return f"Error editing file: {exc}"
-
 
 # ---------------------------------------------------------------------------
 # Chat mode database helpers
@@ -713,12 +710,6 @@ async def list_files_cmd(ctx, directory: str = ""):
     except Exception as e:
         await ctx.send(f"Error listing files: {e}")
 
-response = "\n".join(lines[:50])
-        if len(entries) > 50:
-            response += f"\n...and {len(entries) - 50} more"
-        await ctx.send(response)
-    except Exception as e:
-        await ctx.send(f"Error listing files: {e}")
 
 @bot.command(name="chatmode")
 async def chatmode(ctx, action: str):
