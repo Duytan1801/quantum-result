@@ -324,7 +324,7 @@ async def get_groq_response(user_id, user_message):
             model=GROQ_MODEL,
             messages=messages,
             temperature=0.6,
-            max_completion_tokens=4096,
+            max_completion_tokens=1000,
             top_p=0.95,
             stream=True,
             tools=TOOLS,
