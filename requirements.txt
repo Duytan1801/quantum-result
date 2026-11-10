@@ -1,4 +1,5 @@
-discord.py==2.3.2
-flask==3.0.0
-requests==2.31.0
-python-dotenv==1.0.0
+https://github.com/Rapptz/discord.py/archive/main.zip
+flask
+requests
+python-dotenv
+supabase
