@@ -42,25 +42,42 @@ the bot reply to every message in a channel without needing a mention.
 
 ### Background research jobs
 
-`!research <topic>` starts a long job that runs in the background while the bot
-stays responsive. It reports progress as small grey lines, writes its report to
-markdown files as it goes, and delivers those files as attachments when it
-finishes:
+The bot decides for itself when a request needs deep work. Ask it to "deep
+research" something, or ask for a report, analysis, or comparison, and it
+starts a background job instead of answering in one pass:
 
 ```
-⏳ Job #1 started — AI capex financing
+you: can you do a deep research on Alphabet's financial position if the AI bubble bursts?
+bot: A deep research job on Alphabet's financial position and AI bubble exposure
+     has started. The report, with sources and a verdict, will be posted here.
+⏳ Job #1 started — Alphabet/Google's financial position
 -# step 4 of 30 · 2m14s elapsed · 🔍 Searching the web...
 📄 report_1.md  📄 report_2.md
 ```
 
+The job runs in the background while you keep chatting, reports progress as
+small grey lines, writes its report to markdown files as it goes, and delivers
+those files as attachments when it finishes.
+
+You can also start one explicitly with `!research <topic>`, list them with
+`!jobs`, and stop one with `!cancel #3`.
+
 Jobs use a larger step budget and token limit than an interactive reply, so
-they can dig much deeper.
+they can dig much deeper. Quick questions, math, and simple lookups are
+answered directly without starting a job.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `main.py` | Discord bot, agent loop, tools, and Flask keep-alive server |
+| `main.py` | Entrypoint: Discord bot setup, commands, event handlers |
+| `config.py` | Environment configuration and provider clients |
+| `agent.py` | The agent loop: prompt, context assembly, tool dispatch |
+| `tools.py` | Tool schemas and implementations (WolframAlpha, search, files) |
+| `sandbox.py` | Sandboxed code execution via Daytona |
+| `jobs.py` | Background research jobs |
+| `storage.py` | Supabase persistence (history, facts, chat mode) |
+| `discord_utils.py` | Message splitting and sending |
 | `requirements.txt` | Python dependencies |
 | `.env.example` | Copy to `.env` and add your keys |
 | `render.yaml` | Render service definition (optional) |
