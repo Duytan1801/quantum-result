@@ -397,11 +397,11 @@ def keep_alive():
     Thread(target=run_flask, daemon=True).start()
 
 # ---------------------------------------------------------------------------
-# Groq streaming with tool calling
+# NVIDIA NIM streaming with tool calling
 # ---------------------------------------------------------------------------
 MAX_AGENT_STEPS = 5
 
-async def get_groq_response(user_id, user_message, channel=None):
+async def get_nvidia_response(user_id, user_message, channel=None):
     history = await db_get_history(user_id)
     user_facts = await db_get_user_facts(user_id)
 
@@ -468,7 +468,7 @@ async def get_groq_response(user_id, user_message, channel=None):
         except Exception as e:
             if channel:
                 await channel.send(f"u26a0ufe0f NVIDIA API error: {str(e)[:100]}")
-            return "Groq API error"
+            return "NVIDIA API error"
         
         step_content = ""
         tool_calls_accum = {}
@@ -636,7 +636,7 @@ async def get_groq_response(user_id, user_message, channel=None):
 @bot.command(name="ask")
 async def ask(ctx, *, question: str):
     async with ctx.typing():
-        answer = await get_groq_response(ctx.author.id, question, ctx.channel)
+        answer = await get_nvidia_response(ctx.author.id, question, ctx.channel)
     if len(answer) > 1900:
         answer = answer[:1900] + "\n...(truncated)"
     await ctx.send(answer)
@@ -767,7 +767,7 @@ async def on_message(message):
         if not content:
             content = "Hello!"
         async with message.channel.typing():
-            answer = await get_groq_response(message.author.id, content, message.channel)
+            answer = await get_nvidia_response(message.author.id, content, message.channel)
         if len(answer) > 1900:
             answer = answer[:1900] + "\n...(truncated)"
         await message.reply(answer)
