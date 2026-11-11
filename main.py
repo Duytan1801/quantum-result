@@ -6,17 +6,19 @@ from discord.ext import commands
 from flask import Flask
 from threading import Thread
 from supabase import create_client, Client
-from groq import Groq
+from openai import OpenAI
 import httpx
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3-32b")
+NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3.5-super-vl-120b-a12b")
+NVIDIA_API_URL = os.getenv("NVIDIA_API_URL", "https://integrate.api.nvidia.com/v1")
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 MAX_HISTORY = 3
 
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+nvidia_client = OpenAI(base_url=NVIDIA_API_URL, api_key=NVIDIA_API_KEY)
 
 LANGSEARCH_API_URL = os.getenv("LANGSEARCH_API_URL", "https://api.langsearch.com/v1/web-search")
 LANGSEARCH_API_KEY = os.getenv("LANGSEARCH_API_KEY")
@@ -452,20 +454,21 @@ async def get_groq_response(user_id, user_message, channel=None):
                 await channel.send(f"⚠️ Reached maximum steps ({MAX_AGENT_STEPS}). Stopping.")
             break
         step_count += 1
-        
-        if channel and step_count > 1:
-            await channel.send(f"🔄 **Step {step_count}** - Continuing...")
-        
-        stream = groq_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=messages,
-            temperature=0.6,
-            max_completion_tokens=1000,
-            top_p=0.95,
-            stream=True,
-            tools=TOOLS,
-            tool_choice="auto",
-        )
+        try:
+            stream = nvidia_client.chat.completions.create(
+                model=NVIDIA_MODEL,
+                messages=messages,
+                temperature=0.6,
+                max_completion_tokens=4096,
+                top_p=0.95,
+                stream=True,
+                tools=TOOLS,
+                tool_choice="auto",
+            )
+        except Exception as e:
+            if channel:
+                await channel.send(f"u26a0ufe0f NVIDIA API error: {str(e)[:100]}")
+            return "Groq API error"
         
         step_content = ""
         tool_calls_accum = {}
