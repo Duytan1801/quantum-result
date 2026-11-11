@@ -3,5 +3,5 @@ flask
 requests
 python-dotenv
 supabase
-groq
+openai
 httpx
