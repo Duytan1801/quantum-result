@@ -88,13 +88,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the web for current information, news, facts, or anything not in your training data. Returns titles, URLs, and snippets.",
+            "description": "Search the web for current information, news, facts, or anything not in your training data. Returns titles, URLs, and the page text.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query"},
                     "count": {"type": "integer", "description": "Number of results (default 5, max 10)", "default": 5},
-                    "freshness": {"type": "string", "description": "Time filter: 'day', 'week', 'month', 'year', 'noLimit'", "default": "noLimit"},
+                    "freshness": {"type": "string", "description": "Time filter: 'noLimit' (default), 'oneDay', 'oneWeek', 'oneMonth', 'oneYear', or a date range 'YYYY-MM-DD..YYYY-MM-DD'", "default": "noLimit"},
                 },
                 "required": ["query"],
             },
@@ -247,17 +247,22 @@ run_code_in_piston = run_code_in_sandbox
 # ---------------------------------------------------------------------------
 # LangSearch web search
 # ---------------------------------------------------------------------------
-async def web_search(query: str, count: int = 5, freshness: str = "noLimit") -> str:
+async def web_search(query: str, count: int = 5, freshness: str = "noLimit",
+                     deep: bool = True) -> str:
     if not LANGSEARCH_API_KEY:
         return "Error: LANGSEARCH_API_KEY not configured."
 
     payload = {
         "query": query,
-        "count": min(count, 10),
+        "count": min(max(count, 1), 10),
         "freshness": freshness,
     }
+    if deep:
+        # Ask for page text, not just snippets. Snippets alone are too thin
+        # for detailed research questions (e.g. specific financial figures).
+        payload["contents"] = {"text": {"maxCharacters": 3000}}
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             resp = await client.post(
                 LANGSEARCH_API_URL,
@@ -279,8 +284,9 @@ async def web_search(query: str, count: int = 5, freshness: str = "noLimit") -> 
             for src in sources:
                 name = src.get("name", "")
                 url = src.get("url", "")
-                snippet = src.get("snippet", "")
-                lines.append(f"{name}\n{url}\n{snippet}")
+                # "text" replaces "snippet" when contents.text is requested.
+                body = src.get("text") or src.get("snippet", "")
+                lines.append(f"### {name}\n{url}\n{body}")
 
             return "\n\n".join(lines)
 
@@ -611,7 +617,6 @@ async def get_nvidia_response(user_id, user_message, channel=None):
                 delta = chunk.choices[0].delta
                 if delta.content:
                     step_content += delta.content
-                    final_answer += delta.content
                 if chunk.choices[0].finish_reason:
                     finish_reason = chunk.choices[0].finish_reason
                 if delta.tool_calls:
@@ -650,7 +655,14 @@ async def get_nvidia_response(user_id, user_message, channel=None):
                 "content": step_content or None,
                 "tool_calls": tool_calls_list,
             })
+            # Text emitted before a tool call is a preamble ("Let me gather
+            # more data..."), not part of the answer. Keep it out of the
+            # final answer but preserve it for the model's own context.
+            step_content = ""
         else:
+            # No tool calls: this is the real answer. Discard any preamble
+            # collected during earlier tool-calling steps.
+            final_answer = step_content
             await db_add_message(user_id, "assistant", step_content)
         
         if not tool_calls_accum:
@@ -660,20 +672,27 @@ async def get_nvidia_response(user_id, user_message, channel=None):
                 continue
             break
         
+        # Send one status message per step, not per tool call. The model often
+        # requests several searches in one step, which produced duplicate
+        # "Step N - Searching the web..." lines.
+        if channel:
+            status_messages = {
+                "code": "💻 Running code...",
+                "web_search": "🔍 Searching the web...",
+                "read_file": "📖 Reading file...",
+                "write_file": "📝 Writing file...",
+                "edit_file": "✏️ Editing file...",
+            }
+            tools_used = []
+            for tc in tool_calls_accum.values():
+                label = status_messages.get(tc["name"], f"Running {tc['name']}...")
+                if label not in tools_used:
+                    tools_used.append(label)
+            await channel.send(f"**Step {step_count}** - {' '.join(tools_used)}")
+
         for idx, tc in tool_calls_accum.items():
             tool_name = tc["name"]
-            
-            # Send status message for each tool
-            if channel:
-                status_messages = {
-                    "code": "💻 Running code...",
-                    "web_search": "🔍 Searching the web...",
-                    "read_file": "📖 Reading file...",
-                    "write_file": "📝 Writing file...",
-                    "edit_file": "✏️ Editing file...",
-                }
-                await channel.send(f"**Step {step_count}** - {status_messages.get(tool_name, f'Running {tool_name}...')}")
-            
+
             if tc["name"] == "code":
                 try:
                     args = json.loads(tc["arguments"])
@@ -778,32 +797,104 @@ async def get_nvidia_response(user_id, user_message, channel=None):
     return final_answer or "(no response)"
 
 # ---------------------------------------------------------------------------
+# Discord message helpers
+# ---------------------------------------------------------------------------
+# Discord rejects messages over 2000 characters, so long replies are split
+# into several messages instead of being cut off mid-sentence.
+DISCORD_MAX_LEN = 2000
+
+
+def split_message(text: str, max_len: int = DISCORD_MAX_LEN) -> list[str]:
+    """Split text into Discord-sized chunks, preferring natural break points.
+
+    Tries to break on a paragraph, then a line, then a word boundary, so we
+    don't cut words in half. Very long unbroken tokens (e.g. a base64 blob)
+    are hard-split as a last resort.
+    """
+    if len(text) <= max_len:
+        return [text]
+
+    chunks = []
+    remaining = text
+
+    while len(remaining) > max_len:
+        window = remaining[:max_len]
+
+        # Prefer a paragraph break, then a newline, then a space.
+        cut = window.rfind("\n\n")
+        if cut < max_len // 2:
+            cut = window.rfind("\n")
+        if cut < max_len // 2:
+            cut = window.rfind(" ")
+        if cut < max_len // 2:
+            cut = max_len  # no usable break: hard split
+
+        # Don't leave a tiny fragment behind.
+        if cut < 1:
+            cut = max_len
+
+        chunks.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip("\n")
+
+    if remaining:
+        chunks.append(remaining)
+
+    return chunks
+
+
+async def send_long(target, content: str, code_block: bool = False):
+    """Send content to a channel/context, splitting it across messages if needed.
+
+    `target` may be a CommandContext (uses .send) or a Message (first chunk is
+    a reply, continuations are plain channel messages).
+    """
+    # Reserve room for the continuation marker so no message exceeds the limit.
+    marker_room = 16
+
+    if code_block:
+        chunks = split_message(content, DISCORD_MAX_LEN - marker_room - 10)
+        formatted = [
+            f"```\n{chunk}{f'\n… ({i + 1}/{len(chunks)})' if len(chunks) > 1 else ''}\n```"
+            for i, chunk in enumerate(chunks)
+        ]
+    else:
+        chunks = split_message(content, DISCORD_MAX_LEN - marker_room)
+        formatted = [
+            f"{chunk}{f'… ({i + 1}/{len(chunks)})' if len(chunks) > 1 else ''}"
+            for i, chunk in enumerate(chunks)
+        ]
+
+    for i, text in enumerate(formatted):
+        if i == 0 and hasattr(target, "reply"):
+            await target.reply(text)
+        elif hasattr(target, "send"):
+            await target.send(text)
+        else:
+            # A Context has .send; a Message has .channel.send.
+            await target.channel.send(text)
+
+
+# ---------------------------------------------------------------------------
 # Discord commands
 # ---------------------------------------------------------------------------
 @bot.command(name="ask")
 async def ask(ctx, *, question: str):
     async with ctx.typing():
         answer = await get_nvidia_response(ctx.author.id, question, ctx.channel)
-    if len(answer) > 1900:
-        answer = answer[:1900] + "\n...(truncated)"
-    await ctx.send(answer)
+    await send_long(ctx, answer)
 
 @bot.command(name="run")
 async def run_code(ctx, language: str = "python", *, code: str):
     async with ctx.typing():
         result = await run_code_in_sandbox(code, language)
-    if len(result) > 1900:
-        result = result[:1900] + "\n...(truncated)"
-    await ctx.send(f"```\n{result}\n```")
+    await send_long(ctx, result, code_block=True)
 
 @bot.command(name="search")
 async def search_web(ctx, *, query: str):
     """Search the web. Usage: !search latest AI news"""
     async with ctx.typing():
         result = await web_search(query)
-    if len(result) > 1900:
-        result = result[:1900] + "\n...(truncated)"
-    await ctx.send(result)
+    await send_long(ctx, result)
 
 @bot.command(name="remember")
 async def remember(ctx, key: str, *, value: str):
@@ -885,9 +976,7 @@ async def test_piston(ctx):
     """Test if the code execution sandbox is working. Usage: !test_piston"""
     async with ctx.typing():
         result = await run_code_in_sandbox("print('Code sandbox is working!')", "python")
-    if len(result) > 1900:
-        result = result[:1900] + "\n...(truncated)"
-    await ctx.send(f"```\n{result}\n```")
+    await send_long(ctx, result, code_block=True)
 
 # ---------------------------------------------------------------------------
 # Events
@@ -934,9 +1023,7 @@ async def on_message(message):
             content = "Hello!"
         async with message.channel.typing():
             answer = await get_nvidia_response(message.author.id, content, message.channel)
-        if len(answer) > 1900:
-            answer = answer[:1900] + "\n...(truncated)"
-        await message.reply(answer)
+        await send_long(message, answer)
 
 # ---------------------------------------------------------------------------
 # Entrypoint
