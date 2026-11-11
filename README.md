@@ -9,19 +9,25 @@ Conversations are stored in Supabase so the bot remembers you between sessions.
 |---|---|
 | LLM (primary) | NVIDIA NIM — `nvidia/nemotron-3.5-super-vl-120b-a12b` |
 | LLM (fallback) | Groq — `qwen/qwen3.8-27b` (used only if NVIDIA fails) |
+| Math / science | WolframAlpha (derivatives, integrals, stats, conversions) |
 | Code execution | Daytona sandbox (Python, JavaScript, TypeScript, Bash) |
-| Web search | LangSearch |
+| Web search | LangSearch (returns full page text, not just snippets) |
 | Memory / history | Supabase (`conversation_history`, `user_facts`, `chat_mode`) |
 
-The agent can call tools in a loop: it runs code, searches the web, and
-reads/writes/edits files in a sandboxed workspace before answering.
+The agent can call tools in a loop: it computes with WolframAlpha, runs code,
+searches the web, and reads/writes/edits files in a sandboxed workspace before
+answering. Every reply ends with a small grey footer naming the model and the
+tools that were used.
 
 ## Commands
 
 | Command | Description |
 |---|---|
 | `!ask <question>` | Ask the agent anything |
+| `!research <topic>` | Start a long background research job (up to 30 steps) |
+| `!jobs` | List background research jobs |
 | `!run [lang] <code>` | Run code in the sandbox (default `python`) |
+| `!calc <query>` | Compute with WolframAlpha |
 | `!search <query>` | Search the web |
 | `!remember <key> <value>` | Store a fact about yourself |
 | `!recall <key>` | Recall a stored fact |
@@ -33,6 +39,22 @@ reads/writes/edits files in a sandboxed workspace before answering.
 
 Mentioning the bot (`@Bot hello`) or DMing it also works. `!chatmode on` makes
 the bot reply to every message in a channel without needing a mention.
+
+### Background research jobs
+
+`!research <topic>` starts a long job that runs in the background while the bot
+stays responsive. It reports progress as small grey lines, writes its report to
+markdown files as it goes, and delivers those files as attachments when it
+finishes:
+
+```
+⏳ Job #1 started — AI capex financing
+-# step 4 of 30 · 2m14s elapsed · 🔍 Searching the web...
+📄 report_1.md  📄 report_2.md
+```
+
+Jobs use a larger step budget and token limit than an interactive reply, so
+they can dig much deeper.
 
 ## Files
 
@@ -76,6 +98,7 @@ the bot reply to every message in a channel without needing a mention.
 | `SUPABASE_KEY` | yes | Supabase service-role key |
 | `DAYTONA_API_KEY` | no | Enables the code execution sandbox — <https://daytona.io> |
 | `LANGSEARCH_API_KEY` | no | Enables web search — <https://langsearch.com> |
+| `WOLFRAM_APP_ID` | no | Enables WolframAlpha — <https://wolframalpha.com/api> |
 
 \* At least one of `NVIDIA_API_KEY` or `GROQ_API_KEY` must be set. If both are
 present, NVIDIA is used first and Groq takes over if NVIDIA errors.
@@ -132,7 +155,8 @@ create table chat_mode (
    - **Instance Type:** Free
 5. **Environment Variables** (in the Render dashboard, not `.env`):
    `DISCORD_TOKEN`, `NVIDIA_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`,
-   and optionally `GROQ_API_KEY`, `DAYTONA_API_KEY`, `LANGSEARCH_API_KEY`.
+   and optionally `GROQ_API_KEY`, `DAYTONA_API_KEY`, `LANGSEARCH_API_KEY`,
+   `WOLFRAM_APP_ID`.
 
 ### Keep it awake
 

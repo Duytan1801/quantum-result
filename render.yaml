@@ -23,3 +23,5 @@ services:
         sync: false
       - key: LANGSEARCH_API_KEY
         sync: false
+      - key: WOLFRAM_APP_ID
+        sync: false
