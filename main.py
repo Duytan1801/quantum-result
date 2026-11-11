@@ -6,8 +6,11 @@ from discord.ext import commands
 from flask import Flask
 from threading import Thread
 from supabase import create_client, Client
-from openai import OpenAI
+from openai import AsyncOpenAI
 import httpx
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -17,8 +20,32 @@ NVIDIA_API_URL = os.getenv("NVIDIA_API_URL", "https://integrate.api.nvidia.com/v
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 MAX_HISTORY = 3
 
-supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
-nvidia_client = OpenAI(base_url=NVIDIA_API_URL, api_key=NVIDIA_API_KEY)
+# Groq is an optional fallback provider (used when NVIDIA is unavailable).
+GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
+GROQ_API_URL = os.getenv("GROQ_API_URL", "https://api.groq.com/openai/v1")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+# Daytona provides the sandboxed code execution backend (replaces Piston,
+# whose public API became whitelist-only in February 2026).
+DAYTONA_API_KEY = os.getenv("DAYTONA_API_KEY")
+DAYTONA_API_URL = os.getenv("DAYTONA_API_URL", "https://app.daytona.io/api")
+
+_supabase_url = os.getenv("SUPABASE_URL")
+_supabase_key = os.getenv("SUPABASE_KEY")
+if not _supabase_url or not _supabase_key:
+    raise SystemExit(
+        "SUPABASE_URL and SUPABASE_KEY must be set (see .env.example). "
+        "Copy .env.example to .env and fill in the values."
+    )
+supabase: Client = create_client(_supabase_url, _supabase_key)
+
+if not NVIDIA_API_KEY and not GROQ_API_KEY:
+    raise SystemExit(
+        "NVIDIA_API_KEY (or GROQ_API_KEY) must be set. Copy .env.example to .env "
+        "and fill in the values."
+    )
+nvidia_client = AsyncOpenAI(base_url=NVIDIA_API_URL, api_key=NVIDIA_API_KEY or "not-used")
+groq_client = AsyncOpenAI(base_url=GROQ_API_URL, api_key=GROQ_API_KEY or "not-used") if GROQ_API_KEY else None
 
 LANGSEARCH_API_URL = os.getenv("LANGSEARCH_API_URL", "https://api.langsearch.com/v1/web-search")
 LANGSEARCH_API_KEY = os.getenv("LANGSEARCH_API_KEY")
@@ -46,7 +73,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "code",
-            "description": "Execute code in a sandbox via Piston API. Use for calculations, data processing, API calls, etc.",
+            "description": "Execute code in a sandbox. Use for calculations, data processing, API calls, etc.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -121,31 +148,101 @@ TOOLS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Piston code execution
+# Code execution (Daytona sandbox)
 # ---------------------------------------------------------------------------
-async def run_code_in_piston(code: str, language: str = "python") -> str:
-    async with httpx.AsyncClient(timeout=60.0) as client:
+# A single sandbox is reused across calls so the model keeps state (files,
+# variables) between tool invocations, and so we don't pay sandbox startup on
+# every call. The sandbox is recreated automatically if it dies.
+_daytona_client = None
+_daytona_sandbox = None
+_daytona_lock = asyncio.Lock()
+
+
+async def _get_daytona_sandbox():
+    """Return a live Daytona sandbox, creating one if needed."""
+    global _daytona_client, _daytona_sandbox
+
+    if _daytona_client is None:
+        from daytona import AsyncDaytona, DaytonaConfig
+
+        _daytona_client = AsyncDaytona(DaytonaConfig())
+
+    if _daytona_sandbox is None:
+        _daytona_sandbox = await _daytona_client.create()
+
+    return _daytona_sandbox
+
+
+async def _reset_daytona_sandbox():
+    global _daytona_sandbox
+    sandbox, _daytona_sandbox = _daytona_sandbox, None
+    if sandbox is not None:
         try:
-            resp = await client.post(
-                "https://emkc.org/api/v2/piston/execute",
-                json={
-                    "language": language,
-                    "version": "3.10.0" if language == "python" else "18.15.0",
-                    "files": [{"content": code}],
-                },
-            )
-            resp.raise_for_status()
-            result = resp.json()
-            output = result.get("output", "")
-            if result.get("stderr"):
-                output += f"\n[stderr]: {result['stderr']}"
-            if result.get("status", 0) != 0:
-                output += f"\n[exit code: {result['status']}]"
-            return output or "(no output)"
-        except httpx.HTTPStatusError as e:
-            return f"Piston API error ({e.response.status_code}): {e.response.text[:200]}"
-        except Exception as exc:
-            return f"Piston execution error: {exc}"
+            await _daytona_client.delete(sandbox)
+        except Exception:
+            pass
+
+
+_LANGUAGE_ALIASES = {
+    "python": "python",
+    "python3": "python",
+    "py": "python",
+    "javascript": "javascript",
+    "js": "javascript",
+    "node": "javascript",
+    "typescript": "typescript",
+    "ts": "typescript",
+    "bash": "bash",
+    "sh": "bash",
+    "shell": "bash",
+}
+
+
+async def run_code_in_sandbox(code: str, language: str = "python") -> str:
+    """Execute code in an isolated Daytona sandbox and return its output."""
+    if not DAYTONA_API_KEY:
+        return "Error: DAYTONA_API_KEY is not configured; code execution is unavailable."
+
+    lang = _LANGUAGE_ALIASES.get((language or "python").lower())
+    if lang is None:
+        return (
+            f"Error: unsupported language '{language}'. "
+            "Supported: python, javascript, typescript, bash."
+        )
+
+    async with _daytona_lock:
+        for attempt in (1, 2):
+            try:
+                sandbox = await _get_daytona_sandbox()
+            except Exception as exc:
+                if attempt == 2:
+                    return f"Error: could not start sandbox: {exc}"
+                continue
+
+            try:
+                if lang == "python":
+                    response = await sandbox.process.code_run(code, timeout=60)
+                else:
+                    # For non-Python runtimes, pipe the source through a shell
+                    # heredoc into the interpreter.
+                    interpreter = {"javascript": "node", "typescript": "ts-node", "bash": "bash"}[lang]
+                    heredoc = f"{interpreter} <<'__CODE_EOF__'\n{code}\n__CODE_EOF__"
+                    response = await sandbox.process.exec(heredoc, timeout=60)
+
+                output = (response.result or "").rstrip()
+                exit_code = getattr(response, "exit_code", 0)
+                if exit_code:
+                    output += f"\n[exit code: {exit_code}]"
+                return output or "(no output)"
+            except Exception as exc:
+                # The sandbox may have died between calls; rebuild it and retry.
+                await _reset_daytona_sandbox()
+                if attempt == 2:
+                    return f"Code execution error: {exc}"
+        return "Code execution error: unknown failure"
+
+# Backwards-compatible alias for the old Piston-based name.
+run_code_in_piston = run_code_in_sandbox
 
 # ---------------------------------------------------------------------------
 # LangSearch web search
@@ -334,6 +431,12 @@ async def db_get_user_facts(user_id):
     return {r["fact_key"]: r["fact_value"] for r in rows}
 
 
+async def db_get_fact(user_id, key):
+    """Return a single stored fact value, or None if it does not exist."""
+    facts = await db_get_user_facts(user_id)
+    return facts.get(key)
+
+
 async def db_add_message(user_id, role, content, tool_calls=None, tool_call_id=None, name=None):
     content = content or ""
     def _insert():
@@ -421,8 +524,8 @@ async def get_nvidia_response(user_id, user_message, channel=None):
     )
     messages = [{"role": "system", "content": system_prompt}]
 
-    # Intelligent history truncation: keep recent messages, summarize older ones
-    keep_count = MAX_HISTORY * 4  # ~40 exchanges
+    # Intelligent history truncation: keep recent messages, note older ones
+    keep_count = MAX_HISTORY * 6  # rows fetched from the DB
     if len(history) > keep_count:
         messages.append({
             "role": "system",
@@ -432,11 +535,20 @@ async def get_nvidia_response(user_id, user_message, channel=None):
     else:
         history_to_use = history
 
+    # Rebuild the conversation. A "tool" message is only valid if the assistant
+    # turn that requested it is still present, so drop orphaned tool rows
+    # (which can happen when history is truncated mid tool-call sequence).
+    pending_tool_ids = set()
     for row in history_to_use:
         msg = {"role": row["role"], "content": row["content"] or ""}
         if row.get("tool_calls"):
             msg["tool_calls"] = row["tool_calls"]
+            if row["role"] == "assistant":
+                pending_tool_ids = {tc.get("id") for tc in row["tool_calls"] if tc.get("id")}
         if row.get("tool_call_id"):
+            if row["tool_call_id"] not in pending_tool_ids:
+                continue  # orphaned tool result, skip it
+            pending_tool_ids.discard(row["tool_call_id"])
             msg["tool_call_id"] = row["tool_call_id"]
             msg["name"] = row.get("name")
         messages.append(msg)
@@ -454,44 +566,72 @@ async def get_nvidia_response(user_id, user_message, channel=None):
                 await channel.send(f"⚠️ Reached maximum steps ({MAX_AGENT_STEPS}). Stopping.")
             break
         step_count += 1
-        try:
-            stream = nvidia_client.chat.completions.create(
-                model=NVIDIA_MODEL,
-                messages=messages,
-                temperature=0.6,
-                max_completion_tokens=4096,
-                top_p=0.95,
-                stream=True,
-                tools=TOOLS,
-                tool_choice="auto",
-            )
-        except Exception as e:
+
+        # Try NVIDIA first, fall back to Groq if NVIDIA is unavailable.
+        providers = [("NVIDIA", nvidia_client, NVIDIA_MODEL)]
+        if groq_client is not None:
+            providers.append(("Groq", groq_client, GROQ_MODEL))
+
+        stream = None
+        provider_name = ""
+        last_error = None
+        for name, client, model in providers:
+            try:
+                stream = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.6,
+                    max_completion_tokens=4096,
+                    top_p=0.95,
+                    stream=True,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                )
+                provider_name = name
+                break
+            except Exception as e:
+                last_error = e
+                continue
+
+        if stream is None:
             if channel:
-                await channel.send(f"u26a0ufe0f NVIDIA API error: {str(e)[:100]}")
-            return "NVIDIA API error"
+                await channel.send(f"⚠️ LLM API error: {str(last_error)[:150]}")
+            return "LLM API error"
         
         step_content = ""
         tool_calls_accum = {}
         finish_reason = None
         
-        for chunk in stream:
-            delta = chunk.choices[0].delta
-            if delta.content:
-                step_content += delta.content
-                final_answer += delta.content
-            if chunk.choices[0].finish_reason:
-                finish_reason = chunk.choices[0].finish_reason
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    if idx not in tool_calls_accum:
-                        tool_calls_accum[idx] = {"id": "", "name": "", "arguments": ""}
-                    if tc.id:
-                        tool_calls_accum[idx]["id"] = tc.id
-                    if tc.function.name:
-                        tool_calls_accum[idx]["name"] = tc.function.name
-                    if tc.function.arguments:
-                        tool_calls_accum[idx]["arguments"] += tc.function.arguments
+        try:
+            async for chunk in stream:
+                # The provider sends a final usage-only chunk with an empty
+                # "choices" list. Skip it instead of crashing on choices[0].
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    step_content += delta.content
+                    final_answer += delta.content
+                if chunk.choices[0].finish_reason:
+                    finish_reason = chunk.choices[0].finish_reason
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in tool_calls_accum:
+                            tool_calls_accum[idx] = {"id": "", "name": "", "arguments": ""}
+                        if tc.id:
+                            tool_calls_accum[idx]["id"] = tc.id
+                        if tc.function.name:
+                            tool_calls_accum[idx]["name"] = tc.function.name
+                        if tc.function.arguments:
+                            tool_calls_accum[idx]["arguments"] += tc.function.arguments
+        except Exception as exc:
+            # A stream can fail mid-flight (rate limit, network drop).
+            if channel:
+                await channel.send(f"⚠️ LLM stream error: {str(exc)[:150]}")
+            if final_answer:
+                return final_answer
+            return "LLM stream error"
         
         if tool_calls_accum:
             tool_calls_list = [
@@ -503,6 +643,13 @@ async def get_nvidia_response(user_id, user_message, channel=None):
                 for tc in tool_calls_accum.values()
             ]
             await db_add_message(user_id, "assistant", step_content or "", tool_calls=tool_calls_list)
+            # The API requires the assistant turn that requested the tool calls
+            # to precede the tool results, otherwise the next request is rejected.
+            messages.append({
+                "role": "assistant",
+                "content": step_content or None,
+                "tool_calls": tool_calls_list,
+            })
         else:
             await db_add_message(user_id, "assistant", step_content)
         
@@ -535,7 +682,7 @@ async def get_nvidia_response(user_id, user_message, channel=None):
                 except json.JSONDecodeError:
                     result = "Error: Invalid JSON arguments for code tool"
                 else:
-                    result = await run_code_in_piston(code, language)
+                    result = await run_code_in_sandbox(code, language)
                 
                 messages.append({
                     "role": "tool",
@@ -644,7 +791,7 @@ async def ask(ctx, *, question: str):
 @bot.command(name="run")
 async def run_code(ctx, language: str = "python", *, code: str):
     async with ctx.typing():
-        result = await run_code_in_piston(code, language)
+        result = await run_code_in_sandbox(code, language)
     if len(result) > 1900:
         result = result[:1900] + "\n...(truncated)"
     await ctx.send(f"```\n{result}\n```")
@@ -735,9 +882,9 @@ async def chatmode(ctx, action: str):
 
 @bot.command(name="test_piston")
 async def test_piston(ctx):
-    """Test if Piston sandbox is working. Usage: !test_piston"""
+    """Test if the code execution sandbox is working. Usage: !test_piston"""
     async with ctx.typing():
-        result = await run_code_in_piston("print('Piston sandbox is working!')", "python")
+        result = await run_code_in_sandbox("print('Code sandbox is working!')", "python")
     if len(result) > 1900:
         result = result[:1900] + "\n...(truncated)"
     await ctx.send(f"```\n{result}\n```")
@@ -754,9 +901,28 @@ async def on_ready():
 async def on_message(message):
     if message.author == bot.user:
         return
-    await bot.process_commands(message)
+    # Ignore other bots to avoid feedback loops.
+    if message.author.bot:
+        return
 
-    chat_on = await db_is_chat_mode_enabled(str(message.channel.id))
+    # A prefix command (e.g. "!ask ...") is handled by process_commands.
+    # Don't also feed it to the chat handler, or it would run twice.
+    is_command = False
+    if isinstance(bot.command_prefix, str):
+        is_command = message.content.startswith(bot.command_prefix)
+    elif isinstance(bot.command_prefix, (list, tuple)):
+        is_command = any(message.content.startswith(p) for p in bot.command_prefix)
+
+    await bot.process_commands(message)
+    if is_command:
+        return
+
+    try:
+        chat_on = await db_is_chat_mode_enabled(str(message.channel.id))
+    except Exception as exc:
+        print(f"chat mode lookup failed: {exc}")
+        chat_on = False
+
     mentioned = bot.user.mentioned_in(message)
     is_dm = isinstance(message.channel, discord.DMChannel)
 

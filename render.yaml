@@ -1,13 +1,25 @@
 services:
   - type: web
-    name: quantum-groq-bot
+    name: quantum-discord-bot
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     envVars:
       - key: DISCORD_TOKEN
         sync: false
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: NVIDIA_MODEL
+        value: nvidia/nemotron-3.5-super-vl-120b-a12b
       - key: GROQ_API_KEY
         sync: false
       - key: GROQ_MODEL
-        value: llama3-8b-8192
+        value: qwen/qwen3.8-27b
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: DAYTONA_API_KEY
+        sync: false
+      - key: LANGSEARCH_API_KEY
+        sync: false
