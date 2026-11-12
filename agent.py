@@ -316,19 +316,13 @@ async def summarize_messages(messages: list) -> str:
         "messages": [
             {
                 "role": "system",
+                # Keep this prompt short. A long, heavily-specified prompt makes
+                # the reasoning model think for thousands of tokens and return
+                # an empty summary when the budget runs out.
                 "content": (
-                    "Summarise this conversation so another assistant can continue "
-                    "it without seeing the original.\n"
-                    "Structure it as:\n"
-                    "1. USER REQUESTS - a numbered list of every distinct thing the "
-                    "user asked for, in their words, one per line. Do not merge or "
-                    "drop any, even minor ones.\n"
-                    "2. KEY FINDINGS - facts, figures, dates, file names and results "
-                    "established, each with its source if one was given.\n"
-                    "3. DECISIONS AND PREFERENCES - what was decided, and anything "
-                    "the user said to remember.\n"
-                    "4. STILL OPEN - unfinished work and loose ends.\n"
-                    "Be factual and terse. Plain prose and lists, no preamble."
+                    "List every distinct thing the user asked for (numbered, one per "
+                    "line). Then key findings with sources. Then decisions and "
+                    "preferences. Then open items. Terse, no preamble."
                 ),
             },
             {"role": "user", "content": transcript},
@@ -338,19 +332,20 @@ async def summarize_messages(messages: list) -> str:
 
     last_error = None
     for _name, client, model in provider_chain():
-        # Reasoning models spend part of the budget thinking, so give the
-        # summary plenty of room or the content comes back empty.
-        for max_tokens in (4000, 8000):
-            try:
-                response = await client.chat.completions.create(
-                    model=model, max_completion_tokens=max_tokens, **request
-                )
-                content = (response.choices[0].message.content or "").strip()
-                if content:
-                    return content
-            except Exception as exc:
-                last_error = exc
-                break
+        # The model's max output is 131072. Give the summary that much room:
+        # it is a reasoning model, and a smaller budget makes it spend the
+        # tokens thinking and return an empty summary.
+        try:
+            response = await client.chat.completions.create(
+                model=model, max_completion_tokens=131072, **request
+            )
+            content = (response.choices[0].message.content or "").strip()
+            if content:
+                return content
+            last_error = "empty summary"
+        except Exception as exc:
+            last_error = exc
+            continue
     print(f"could not summarise conversation: {last_error}")
     return ""
 
