@@ -49,6 +49,24 @@ The evaluator only allows numbers, `+ - * / // % **`, parentheses, and
 functions like `sqrt`/`log`/`abs` — no names, no attribute access, no calls
 outside a whitelist.
 
+## Math rendering
+
+Discord does not render LaTeX in chat, so the bot renders it for you:
+
+| Input | Output |
+|---|---|
+| `$x^2$`, `$\alpha$`, `$\frac{1}{2}$` | Unicode text inline — `x²`, `α`, `1/2` |
+| `$$...$$`, `\[...\]` | A rendered PNG attached to the message |
+
+Display equations are rendered with matplotlib's `mathtext` engine on Discord's
+dark-theme background (`#313338`), so they blend in rather than sitting as a
+white rectangle. Each reply can carry up to 5 equation images; beyond that the
+remaining equations fall back to Unicode text so a message never turns into an
+image dump.
+
+Fenced code blocks are never touched — Python source containing `$` or
+`\frac` is left exactly as written.
+
 ## Commands
 
 | Command | Description |
@@ -107,7 +125,8 @@ answered directly without starting a job.
 | `sandbox.py` | Sandboxed code execution via Daytona |
 | `jobs.py` | Background research jobs |
 | `storage.py` | Supabase persistence (history, facts, chat mode) |
-| `discord_utils.py` | Message splitting and sending |
+| `discord_utils.py` | Message splitting, sending, and math rendering |
+| `mathrender.py` | LaTeX → Unicode text and LaTeX → PNG |
 | `requirements.txt` | Python dependencies |
 | `.env.example` | Copy to `.env` and add your keys |
 | `render.yaml` | Render service definition (optional) |
