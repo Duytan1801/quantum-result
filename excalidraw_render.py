@@ -70,8 +70,23 @@ def _bound_point(el, towards):
     return cx + dx * s, cy + dy * s
 
 
+def _element_bounds(el):
+    """The visual bounds of an element as (x0, y0, x1, y1).
+
+    Arrows and lines store their points relative to (x, y) and can run in any
+    direction, so their x + width is not the right edge - the points are.
+    """
+    if el["type"] in ("arrow", "line"):
+        points = el.get("points") or [[0, 0]]
+        xs = [el["x"] + p[0] for p in points]
+        ys = [el["y"] + p[1] for p in points]
+        return min(xs), min(ys), max(xs), max(ys)
+    return (el["x"], el["y"],
+            el["x"] + el.get("width", 0), el["y"] + el.get("height", 0))
+
+
 def render_excalidraw(data: dict, path: str, background: str = _DARK_BG,
-                      scale: float = 1.6) -> bool:
+                      scale: float = 1.6, max_pixels: int = 1600) -> bool:
     """Render Excalidraw JSON to a PNG. Returns True on success."""
     try:
         import matplotlib
@@ -83,19 +98,30 @@ def render_excalidraw(data: dict, path: str, background: str = _DARK_BG,
         if not elements:
             return False
 
-        # Bounds
-        min_x = min(e["x"] for e in elements)
-        min_y = min(e["y"] for e in elements)
-        max_x = max(e["x"] + e.get("width", 0) for e in elements)
-        max_y = max(e["y"] + e.get("height", 0) for e in elements)
-        pad = 30
-        w = (max_x - min_x) + pad * 2
-        h = (max_y - min_y) + pad * 2
+        # Bounds across every element, using the correct rule per type.
+        bounds = [_element_bounds(e) for e in elements]
+        min_x = min(b[0] for b in bounds)
+        min_y = min(b[1] for b in bounds)
+        max_x = max(b[2] for b in bounds)
+        max_y = max(b[3] for b in bounds)
 
-        fig = plt.figure(figsize=(w / 60, h / 60), dpi=200)
+        # Symmetric padding so the drawing sits centred in the frame.
+        pad = max(24.0, (max_x - min_x) * 0.04)
+        min_x -= pad
+        max_x += pad
+        min_y -= pad
+        max_y += pad
+
+        w = max_x - min_x
+        h = max_y - min_y
+
+        # Keep the image a sensible size.
+        dpi = 200
+        px_per_unit = min(2.6, max_pixels / max(w, h))
+        fig = plt.figure(figsize=(w * px_per_unit / dpi, h * px_per_unit / dpi), dpi=dpi)
         ax = fig.add_axes([0, 0, 1, 1])
-        ax.set_xlim(min_x - pad, max_x + pad)
-        ax.set_ylim(max_y + pad, min_y - pad)  # screen coords, flipped
+        ax.set_xlim(min_x, max_x)
+        ax.set_ylim(max_y, min_y)  # screen coords, flipped
         ax.axis("off")
         fig.patch.set_facecolor(background)
         ax.set_facecolor(background)

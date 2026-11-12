@@ -11,8 +11,8 @@ The sketch itself is built with `Excalidraw_Interface` and rendered to PNG by
 import os
 
 # Grid spacing (centre-to-centre).
-COL_SPACING = 300
-ROW_SPACING = 170
+COL_SPACING = 280
+ROW_SPACING = 135
 
 # Node sizing.
 MIN_WIDTH = 150
@@ -55,6 +55,7 @@ def build_diagram(spec: dict) -> dict:
 
     # Lay the nodes out on a grid.
     placed = {}
+    cols_used = []
     for index, node in enumerate(nodes):
         node_id = str(node.get("id") or f"n{index}")
         text = str(node.get("text") or node_id)
@@ -69,6 +70,7 @@ def build_diagram(spec: dict) -> dict:
         col = node.get("col")
         row = index if row is None else int(row)
         col = 0 if col is None else int(col)
+        cols_used.append(col)
 
         cx = col * COL_SPACING
         cy = row * ROW_SPACING
@@ -95,10 +97,14 @@ def build_diagram(spec: dict) -> dict:
 
         placed[node_id] = (element, cx, cy, width, height)
 
-    # Title, above the first row.
+    # Title, centred over the layout and sitting just above the top row.
     title = str(spec.get("title") or "").strip()
     if title:
-        sb.Text(title, 0, -ROW_SPACING + 20, fontSize=26)
+        centre_col = (min(cols_used) + max(cols_used)) / 2
+        top_row = min(int(n.get("row") if n.get("row") is not None else i)
+                      for i, n in enumerate(nodes))
+        title_y = top_row * ROW_SPACING - NODE_HEIGHT / 2 - 46
+        sb.Text(title, centre_col * COL_SPACING, title_y, fontSize=26)
 
     # Edges
     for edge in edges:

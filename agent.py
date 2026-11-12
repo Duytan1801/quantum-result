@@ -13,6 +13,7 @@ from config import (
 from agents import AGENTS, TOOLS, agent_catalogue
 from storage import db_add_message, db_get_history, db_get_user_facts
 from tools import written_files
+from vision import build_image_content
 from tools import (
     draw_diagram,
     edit_file,
@@ -119,6 +120,16 @@ def build_system_prompt(user_facts: dict) -> str:
         "and saying results will be posted here.\n"
         "- Answer directly instead of delegating only for single lookups, quick "
         "facts, and maths - anything one tool call can settle."
+        "\n\n"
+        "Images:\n"
+        "- You can see any pictures attached to the message. Describe them "
+        "accurately: read charts, tables, screenshots, diagrams and text in "
+        "images, and quote the numbers you can actually make out.\n"
+        "- If an image is unclear or cut off, say so rather than guessing what "
+        "it says.\n"
+        "- If a picture shows figures, read the axis labels, units and scale "
+        "before you interpret the shape of the data, and recompute any "
+        "derived quantity with verify_claims."
         "\n\n"
         "Sourcing rules - these are not optional:\n"
         "- If a question could have a different answer today than it did a year "
@@ -284,7 +295,21 @@ def _is_failure(result: str) -> bool:
 
 
 def _message_size(m) -> int:
-    return len(str(m.get("content") or "")) + len(str(m.get("tool_calls") or ""))
+    """Rough size of a message for the context budget.
+
+    Image parts are counted as a flat estimate, not their base64 length - a
+    data URL can be megabytes and would blow the budget on its own.
+    """
+    content = m.get("content")
+    if isinstance(content, list):
+        size = sum(
+            len(str(p.get("text") or "")) + 2000
+            for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+        size += sum(2000 for p in content if isinstance(p, dict) and p.get("type") == "image_url")
+        return size + len(str(m.get("tool_calls") or ""))
+    return len(str(content or "")) + len(str(m.get("tool_calls") or ""))
 
 
 def _transcript(messages: list, limit: int = 60000) -> str:
@@ -666,7 +691,7 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     }
 
 
-async def get_nvidia_response_full(user_id, user_message, channel=None):
+async def get_nvidia_response_full(user_id, user_message, channel=None, attachments=None):
     """Answer a message, persist the exchange, and return the answer plus metadata."""
     _check_delegation_tool()
     history = await db_get_history(user_id, limit=HISTORY_ROWS)
@@ -674,8 +699,21 @@ async def get_nvidia_response_full(user_id, user_message, channel=None):
 
     messages = [{"role": "system", "content": build_system_prompt(user_facts)}]
     messages.extend(history_to_messages(history))
-    messages.append({"role": "user", "content": user_message})
-    await db_add_message(user_id, "user", user_message)
+
+    # If the user attached pictures, hand them to the vision model.
+    content = user_message
+    stored = user_message
+    if attachments:
+        try:
+            content, note = await build_image_content(attachments, user_message)
+            stored = user_message + note
+        except Exception as exc:
+            print(f"could not prepare images: {exc}")
+            content = user_message
+            stored = user_message
+
+    messages.append({"role": "user", "content": content})
+    await db_add_message(user_id, "user", stored)
 
     # If the question depends on the world as it is now, remind the model to
     # source and verify before answering. Cheap to add, and it stops the model

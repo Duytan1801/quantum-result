@@ -71,7 +71,12 @@ async def attach_images(target, files: list, caption: str = None):
 @bot.command(name="ask")
 async def ask(ctx, *, question: str):
     async with ctx.typing():
-        result = await get_nvidia_response_full(ctx.author.id, question, ctx.channel)
+        result = await get_nvidia_response_full(
+            ctx.author.id,
+            question,
+            ctx.channel,
+            attachments=ctx.message.attachments,
+        )
     await send_long(ctx, result["answer"], footer=result["footer"])
     await attach_images(ctx, result.get("files") or [])
 
@@ -297,7 +302,12 @@ async def on_message(message):
         if not content:
             content = "Hello!"
         async with message.channel.typing():
-            result = await get_nvidia_response_full(message.author.id, content, message.channel)
+            result = await get_nvidia_response_full(
+                message.author.id,
+                content,
+                message.channel,
+                attachments=message.attachments,
+            )
         await send_long(message, result["answer"], footer=result["footer"])
         await attach_images(message, result.get("files") or [])
 
