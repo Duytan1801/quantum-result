@@ -1,11 +1,20 @@
 """The agent loop: prompt building, context assembly, and tool-calling."""
 
 import json
+import os
 
-from config import MAX_AGENT_STEPS, MAX_HISTORY, NVIDIA_MODEL, provider_chain
+from config import (
+    CONTEXT_CHAR_BUDGET,
+    HISTORY_ROWS,
+    MAX_AGENT_STEPS,
+    NVIDIA_MODEL,
+    provider_chain,
+)
 from agents import AGENTS, TOOLS, agent_catalogue
 from storage import db_add_message, db_get_history, db_get_user_facts
+from tools import written_files
 from tools import (
+    draw_diagram,
     edit_file,
     read_file,
     run_code_in_sandbox,
@@ -24,6 +33,7 @@ STATUS_LABELS = {
     "write_file": "📝 Writing file...",
     "edit_file": "✏️ Editing file...",
     "verify_claims": "🧮 Recomputing figures...",
+    "draw_diagram": "🎨 Drawing a diagram...",
     "start_agent_task": "⏳ Starting a background agent...",
 }
 
@@ -158,24 +168,35 @@ def build_system_prompt(user_facts: dict) -> str:
 def history_to_messages(history: list) -> list:
     """Rebuild API messages from stored conversation rows.
 
-    A "tool" message is only valid if the assistant turn that requested it is
-    still present, so drop orphaned tool rows (which can happen when history
-    is truncated mid tool-call sequence).
+    Two things can break a request:
+      * a "tool" row whose assistant turn is missing - the API rejects a tool
+        result with no matching call;
+      * an assistant turn whose tool_calls have no results, which happens when
+        the fetched window cuts the conversation in the middle of a tool-call
+        group. The API rejects that too, so those calls are stripped.
     """
+    # Which tool calls actually have a result stored?
+    answered = {row.get("tool_call_id") for row in history if row.get("tool_call_id")}
+
     messages = []
     pending_tool_ids = set()
     for row in history:
-        msg = {"role": row["role"], "content": row["content"] or ""}
-        if row.get("tool_calls"):
-            msg["tool_calls"] = row["tool_calls"]
-            if row["role"] == "assistant":
-                pending_tool_ids = {tc.get("id") for tc in row["tool_calls"] if tc.get("id")}
+        role = row.get("role")
+        msg = {"role": role, "content": row.get("content") or ""}
+
+        if role == "assistant" and row.get("tool_calls"):
+            calls = [tc for tc in row["tool_calls"] if tc.get("id") in answered]
+            if calls:
+                msg["tool_calls"] = calls
+                pending_tool_ids = {tc["id"] for tc in calls}
+
         if row.get("tool_call_id"):
             if row["tool_call_id"] not in pending_tool_ids:
                 continue  # orphaned tool result, skip it
             pending_tool_ids.discard(row["tool_call_id"])
             msg["tool_call_id"] = row["tool_call_id"]
             msg["name"] = row.get("name")
+
         messages.append(msg)
     return messages
 
@@ -232,6 +253,11 @@ async def _run_tool(name: str, args: dict, channel=None, user_id=None) -> str:
             args.get("old_string", ""),
             args.get("new_string", ""),
         )
+    if name == "draw_diagram":
+        return await draw_diagram(
+            args.get("spec") or args.get("diagram") or args,
+            args.get("filename", "diagram.png"),
+        )
     if name == "verify_claims":
         return await verify_claims(args.get("checks") or [])
     if name == "start_agent_task":
@@ -257,6 +283,181 @@ def _is_failure(result: str) -> bool:
     )
 
 
+def _message_size(m) -> int:
+    return len(str(m.get("content") or "")) + len(str(m.get("tool_calls") or ""))
+
+
+def _transcript(messages: list, limit: int = 60000) -> str:
+    """Render messages as plain text so they can be summarised."""
+    lines = []
+    for m in messages:
+        role = m.get("role", "?")
+        content = str(m.get("content") or "")
+        if role == "tool":
+            content = f"[{m.get('name') or 'tool'}] {content}"
+        elif role == "assistant" and m.get("tool_calls"):
+            names = ", ".join(t["function"]["name"] for t in m["tool_calls"])
+            content = f"(calling {names}) {content}".strip()
+        if content.strip():
+            lines.append(f"{role.upper()}: {content[:4000]}")
+    text = "\n\n".join(lines)
+    return text[:limit] + ("\n\n[...truncated]" if len(text) > limit else "")
+
+
+async def summarize_messages(messages: list) -> str:
+    """Summarise a block of conversation so the model can keep going without it."""
+    if not messages:
+        return ""
+    transcript = _transcript(messages)
+    if not transcript.strip():
+        return ""
+
+    request = {
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Summarise this conversation so another assistant can continue "
+                    "it without seeing the original.\n"
+                    "Structure it as:\n"
+                    "1. USER REQUESTS - a numbered list of every distinct thing the "
+                    "user asked for, in their words, one per line. Do not merge or "
+                    "drop any, even minor ones.\n"
+                    "2. KEY FINDINGS - facts, figures, dates, file names and results "
+                    "established, each with its source if one was given.\n"
+                    "3. DECISIONS AND PREFERENCES - what was decided, and anything "
+                    "the user said to remember.\n"
+                    "4. STILL OPEN - unfinished work and loose ends.\n"
+                    "Be factual and terse. Plain prose and lists, no preamble."
+                ),
+            },
+            {"role": "user", "content": transcript},
+        ],
+        "temperature": 0.2,
+    }
+
+    last_error = None
+    for _name, client, model in provider_chain():
+        # Reasoning models spend part of the budget thinking, so give the
+        # summary plenty of room or the content comes back empty.
+        for max_tokens in (4000, 8000):
+            try:
+                response = await client.chat.completions.create(
+                    model=model, max_completion_tokens=max_tokens, **request
+                )
+                content = (response.choices[0].message.content or "").strip()
+                if content:
+                    return content
+            except Exception as exc:
+                last_error = exc
+                break
+    print(f"could not summarise conversation: {last_error}")
+    return ""
+
+
+async def compact_history(messages: list, budget: int = None,
+                          keep_recent: int = None) -> list:
+    """Summarise older turns instead of dropping them (Claude-style).
+
+    The most recent part of the conversation is kept verbatim; everything
+    before it is replaced by a single summary. The summary is carried forward
+    on later turns, so the model never loses the thread.
+    """
+    if budget is None:
+        from config import CONTEXT_CHAR_BUDGET
+        budget = CONTEXT_CHAR_BUDGET
+    if keep_recent is None:
+        from config import KEEP_RECENT_CHARS
+        keep_recent = KEEP_RECENT_CHARS
+
+    if sum(_message_size(m) for m in messages) <= budget:
+        return messages
+
+    # Leading system messages are always kept.
+    head = []
+    i = 0
+    while i < len(messages) and messages[i].get("role") == "system":
+        head.append(messages[i])
+        i += 1
+    body = messages[i:]
+
+    # Walk back from the end, keeping the most recent turns verbatim.
+    keep_from = len(body)
+    acc = 0
+    for idx in range(len(body) - 1, -1, -1):
+        acc += _message_size(body[idx])
+        if acc >= keep_recent:
+            keep_from = idx
+            break
+    older = body[:keep_from]
+    recent = body[keep_from:]
+
+    if not older:
+        return messages
+
+    summary = await summarize_messages(older)
+    if not summary:
+        # Could not summarise - fall back to dropping the oldest tool groups.
+        return trim_context(messages, budget)
+
+    compacted = head + [
+        {"role": "system", "content": f"[Earlier conversation, summarised]\n{summary}"}
+    ] + recent
+    return compacted
+
+
+def trim_context(messages: list, budget: int = None) -> list:
+    """Drop the oldest tool-calling turns when the context grows too large.
+
+    With a high step limit a single turn can accumulate megabytes of tool
+    output and blow the model's context window. Assistant turns that requested
+    tools are dropped together with their results, so a tool result is never
+    separated from the call that produced it.
+    """
+    if budget is None:
+        from config import CONTEXT_CHAR_BUDGET
+        budget = CONTEXT_CHAR_BUDGET
+
+    if sum(_message_size(m) for m in messages) <= budget:
+        return messages
+
+    # Leading system messages are always kept.
+    head = []
+    i = 0
+    while i < len(messages) and messages[i].get("role") == "system":
+        head.append(messages[i])
+        i += 1
+    body = messages[i:]
+
+    # Find each assistant turn that requested tools, and the results after it.
+    groups = []
+    j = 0
+    while j < len(body):
+        if body[j].get("role") == "assistant" and body[j].get("tool_calls"):
+            k = j + 1
+            while k < len(body) and body[k].get("role") == "tool":
+                k += 1
+            groups.append((j, k))
+            j = k
+        else:
+            j += 1
+
+    if not groups:
+        return messages
+
+    # Drop the oldest groups until the context fits. Collect the indices
+    # first - deleting as we go would shift the later group positions.
+    dropped = set()
+    for start, end in groups:
+        kept = [m for i, m in enumerate(body) if i not in dropped]
+        if sum(_message_size(m) for m in head + kept) <= budget:
+            break
+        dropped.update(range(start, end))
+
+    kept = [m for i, m in enumerate(body) if i not in dropped]
+    return head + kept
+
+
 async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGENT_STEPS,
                          tools=None, persist=True, on_step=None, max_tokens=4096):
     """Run the agent tool-calling loop until the model produces a final answer.
@@ -278,6 +479,9 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                 await channel.send(f"⚠️ Reached maximum steps ({max_steps}). Stopping.")
             break
         step_count += 1
+
+        # Keep the request inside the model's context window.
+        messages = trim_context(messages)
 
         # Try NVIDIA first, fall back to Groq if NVIDIA is unavailable.
         stream = None
@@ -470,22 +674,11 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
 async def get_nvidia_response_full(user_id, user_message, channel=None):
     """Answer a message, persist the exchange, and return the answer plus metadata."""
     _check_delegation_tool()
-    history = await db_get_history(user_id)
+    history = await db_get_history(user_id, limit=HISTORY_ROWS)
     user_facts = await db_get_user_facts(user_id)
 
     messages = [{"role": "system", "content": build_system_prompt(user_facts)}]
-
-    keep_count = MAX_HISTORY * 6
-    if len(history) > keep_count:
-        messages.append({
-            "role": "system",
-            "content": f"[Earlier conversation truncated. Only the last {keep_count} messages are shown.]"
-        })
-        history_to_use = history[-keep_count:]
-    else:
-        history_to_use = history
-
-    messages.extend(history_to_messages(history_to_use))
+    messages.extend(history_to_messages(history))
     messages.append({"role": "user", "content": user_message})
     await db_add_message(user_id, "user", user_message)
 
@@ -495,12 +688,26 @@ async def get_nvidia_response_full(user_id, user_message, channel=None):
     if needs_fresh_data(user_message):
         messages.insert(1, {"role": "system", "content": FRESHNESS_REMINDER})
 
-    result = await run_agent_loop(
-        messages,
-        user_id=user_id,
-        channel=channel,
-        max_steps=MAX_AGENT_STEPS,
-    )
+    # Keep the whole conversation, but compact it if it has grown too large.
+    # Older turns are summarised rather than dropped, so the model keeps the
+    # thread of what the user wants.
+    messages = await compact_history(messages)
+
+    # Track any files written during this turn so generated images (diagrams,
+    # plots) can be attached to the reply automatically.
+    tracker: list[str] = []
+    token = written_files.set(tracker)
+    try:
+        result = await run_agent_loop(
+            messages,
+            user_id=user_id,
+            channel=channel,
+            max_steps=MAX_AGENT_STEPS,
+        )
+    finally:
+        written_files.reset(token)
+
+    result["files"] = [p for p in tracker if os.path.exists(p)]
     result["footer"] = _footer_for(result)
     return result
 

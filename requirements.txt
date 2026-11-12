@@ -6,3 +6,4 @@ openai
 httpx
 daytona
 matplotlib
+Excalidraw-Interface

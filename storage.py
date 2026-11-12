@@ -7,7 +7,7 @@ EVERY user. Always filter with an exact ``eq.`` value, never a LIKE pattern.
 
 import asyncio
 
-from config import MAX_HISTORY, supabase
+from config import HISTORY_ROWS, supabase
 
 
 async def db_is_chat_mode_enabled(channel_id: str) -> bool:
@@ -45,7 +45,7 @@ async def db_set_chat_mode(channel_id: str, enabled: bool):
     await asyncio.to_thread(_upsert)
 
 
-async def db_get_history(user_id, limit=MAX_HISTORY * 6):
+async def db_get_history(user_id, limit=HISTORY_ROWS):
     """Fetch the most recent conversation rows for a user, oldest first."""
     def _fetch():
         try:

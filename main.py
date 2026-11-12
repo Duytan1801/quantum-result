@@ -52,11 +52,28 @@ def keep_alive():
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+
+
+async def attach_images(target, files: list, caption: str = None):
+    """Attach images the agent produced during its turn."""
+    images = [f for f in (files or []) if f.lower().endswith(IMAGE_SUFFIXES)]
+    if not images:
+        return
+    sender = target.send if hasattr(target, "send") else target.channel.send
+    for path in images:
+        try:
+            await sender(file=discord.File(path))
+        except Exception as exc:
+            await sender(f"⚠️ Could not attach {os.path.basename(path)}: {exc}")
+
+
 @bot.command(name="ask")
 async def ask(ctx, *, question: str):
     async with ctx.typing():
         result = await get_nvidia_response_full(ctx.author.id, question, ctx.channel)
     await send_long(ctx, result["answer"], footer=result["footer"])
+    await attach_images(ctx, result.get("files") or [])
 
 
 @bot.command(name="run")
@@ -282,6 +299,7 @@ async def on_message(message):
         async with message.channel.typing():
             result = await get_nvidia_response_full(message.author.id, content, message.channel)
         await send_long(message, result["answer"], footer=result["footer"])
+        await attach_images(message, result.get("files") or [])
 
 
 # ---------------------------------------------------------------------------

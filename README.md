@@ -49,6 +49,35 @@ The evaluator only allows numbers, `+ - * / // % **`, parentheses, and
 functions like `sqrt`/`log`/`abs` — no names, no attribute access, no calls
 outside a whitelist.
 
+## Diagrams
+
+The bot can draw flowcharts, architecture sketches and concept maps, and send
+them as images. It uses
+[Excalidraw-Interface](https://pypi.org/project/Excalidraw-Interface/) to
+build the sketch, which is then rendered to a PNG on Discord's dark background
+and attached to the reply automatically.
+
+The model only describes *what* the diagram says — the layout is computed from
+each node's row and column, so it never has to work out coordinates:
+
+```json
+{
+  "title": "Agent pipeline",
+  "nodes": [
+    {"id": "q", "text": "User question", "row": 0, "col": 0, "color": "blue"},
+    {"id": "d", "text": "Needs current data?", "shape": "diamond", "row": 1, "col": 0},
+    {"id": "s", "text": "web_search", "row": 2, "col": -1, "color": "violet"}
+  ],
+  "edges": [
+    {"from": "q", "to": "d"},
+    {"from": "d", "to": "s", "label": "yes"}
+  ]
+}
+```
+
+Shapes are `rectangle` (a step), `diamond` (a decision) and `ellipse` (a
+start/end). Edges can carry a label, be dashed, or point both ways.
+
 ## Math rendering
 
 Discord does not render LaTeX in chat, so the bot renders it for you:
@@ -127,6 +156,8 @@ answered directly without starting a job.
 | `storage.py` | Supabase persistence (history, facts, chat mode) |
 | `discord_utils.py` | Message splitting, sending, and math rendering |
 | `mathrender.py` | LaTeX → Unicode text and LaTeX → PNG |
+| `diagrams.py` | Node/edge spec → Excalidraw sketch, with grid layout |
+| `excalidraw_render.py` | Excalidraw JSON → PNG |
 | `requirements.txt` | Python dependencies |
 | `.env.example` | Copy to `.env` and add your keys |
 | `render.yaml` | Render service definition (optional) |

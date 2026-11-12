@@ -331,6 +331,38 @@ async def verify_claims(checks: list) -> str:
     return header + "\n" + "\n".join(lines)
 
 
+async def draw_diagram(spec: dict, filename: str = "diagram.png") -> str:
+    """Draw a diagram and save it as a PNG in the workspace.
+
+    `spec` is {"title": ..., "nodes": [...], "edges": [...]}. The layout is
+    computed from each node's row/column, so the caller never has to work out
+    coordinates.
+    """
+    if not isinstance(spec, dict):
+        return "Error: draw_diagram needs a specification object."
+    nodes = spec.get("nodes")
+    if not nodes:
+        return "Error: a diagram needs at least one node."
+
+    name = os.path.basename(str(filename or "diagram.png"))
+    if not name.lower().endswith(".png"):
+        name += ".png"
+    path = safe_path(name)
+
+    try:
+        from diagrams import diagram_to_png
+
+        diagram_to_png(spec, path)
+    except Exception as exc:
+        return f"Error: could not draw the diagram: {exc}"
+
+    track_file(path)
+    return (
+        f"Drew the diagram '{name}' ({len(nodes)} nodes) and saved it in the "
+        f"workspace. It will be attached to your reply automatically."
+    )
+
+
 # ---------------------------------------------------------------------------
 # File tools
 # ---------------------------------------------------------------------------
@@ -390,6 +422,12 @@ async def edit_file(file_path: str, old_string: str, new_string: str) -> str:
 # ---------------------------------------------------------------------------
 # Tool schemas shown to the model
 # ---------------------------------------------------------------------------
+# Fill colours a diagram node may use.
+VALID_COLORS = (
+    "red", "pink", "violet", "blue", "cyan", "green", "yellow", "orange",
+    "gray", "brown", "black",
+)
+
 TOOLS = [
     {
         "type": "function",
@@ -496,6 +534,101 @@ TOOLS = [
                     "new_string": {"type": "string", "description": "Text to replace old_string with"},
                 },
                 "required": ["file_path", "old_string", "new_string"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "draw_diagram",
+            "description": (
+                "Draw a diagram - a flowchart, architecture sketch, pipeline, or "
+                "concept map - and send it as an image. Describe the nodes and the "
+                "connections between them; the layout is worked out for you, so you "
+                "only need to say what each box says and how the arrows run. Use this "
+                "whenever a picture would explain something better than prose."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Optional title shown above the diagram.",
+                    },
+                    "nodes": {
+                        "type": "array",
+                        "description": "The boxes in the diagram.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": (
+                                        "A short unique id for this node, used by the "
+                                        "edges to refer to it (e.g. 'start', 'search')."
+                                    ),
+                                },
+                                "text": {
+                                    "type": "string",
+                                    "description": "The label inside the node.",
+                                },
+                                "shape": {
+                                    "type": "string",
+                                    "enum": ["rectangle", "diamond", "ellipse"],
+                                    "description": (
+                                        "rectangle for a step, diamond for a decision, "
+                                        "ellipse for a start/end."
+                                    ),
+                                    "default": "rectangle",
+                                },
+                                "row": {
+                                    "type": "integer",
+                                    "description": (
+                                        "Vertical position, 0 for the top. Nodes in "
+                                        "the same row sit side by side."
+                                    ),
+                                },
+                                "col": {
+                                    "type": "integer",
+                                    "description": (
+                                        "Horizontal position. Use different columns to "
+                                        "place nodes side by side; negative columns "
+                                        "are allowed."
+                                    ),
+                                },
+                                "color": {
+                                    "type": "string",
+                                    "enum": list(VALID_COLORS),
+                                    "description": "Fill colour of the node.",
+                                },
+                            },
+                            "required": ["id", "text"],
+                        },
+                    },
+                    "edges": {
+                        "type": "array",
+                        "description": "The arrows between nodes.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "from": {"type": "string", "description": "Node id to draw from."},
+                                "to": {"type": "string", "description": "Node id to draw to."},
+                                "label": {"type": "string", "description": "Optional text on the arrow."},
+                                "style": {
+                                    "type": "string",
+                                    "enum": ["solid", "dashed"],
+                                    "description": "Line style of the arrow.",
+                                },
+                                "double": {
+                                    "type": "boolean",
+                                    "description": "Draw arrows at both ends.",
+                                },
+                            },
+                            "required": ["from", "to"],
+                        },
+                    },
+                },
+                "required": ["nodes"],
             },
         },
     },
