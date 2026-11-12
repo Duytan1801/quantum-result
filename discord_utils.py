@@ -76,8 +76,6 @@ async def send_long(target, content: str, code_block: bool = False, footer: str 
             parts = [("text", content)]
 
     try:
-        # Reserve room for the continuation marker so no message exceeds the limit.
-        marker_room = 16
         footer_text = f"\n-# {footer}" if footer else ""
         footer_room = len(footer_text) + 4
 
@@ -89,24 +87,16 @@ async def send_long(target, content: str, code_block: bool = False, footer: str 
                 outgoing.append(("image", value))
                 continue
             if code_block:
-                chunks = split_message(value, DISCORD_MAX_LEN - marker_room - 10 - footer_room)
+                chunks = split_message(value, DISCORD_MAX_LEN - 10 - footer_room)
                 for chunk in chunks:
                     outgoing.append(("text", f"```\n{chunk}\n```"))
             else:
-                chunks = split_message(value, DISCORD_MAX_LEN - marker_room - footer_room)
+                chunks = split_message(value, DISCORD_MAX_LEN - footer_room)
                 for chunk in chunks:
                     outgoing.append(("text", chunk))
 
-        # Number the text messages so a split reply reads "(2/3)".
-        text_positions = [i for i, (k, _) in enumerate(outgoing) if k == "text"]
-        total_text = len(text_positions)
-        for n, i in enumerate(text_positions, 1):
-            chunk = outgoing[i][1]
-            if total_text > 1:
-                chunk += f"… ({n}/{total_text})"
-            outgoing[i] = ("text", chunk)
-
         # The footer goes on the last text message.
+        text_positions = [i for i, (k, _) in enumerate(outgoing) if k == "text"]
         if footer_text and text_positions:
             i = text_positions[-1]
             outgoing[i] = ("text", outgoing[i][1] + footer_text)

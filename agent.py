@@ -1,5 +1,6 @@
 """The agent loop: prompt building, context assembly, and tool-calling."""
 
+import asyncio
 import json
 import os
 
@@ -721,6 +722,18 @@ async def get_nvidia_response_full(user_id, user_message, channel=None, attachme
     if needs_fresh_data(user_message):
         messages.insert(1, {"role": "system", "content": FRESHNESS_REMINDER})
 
+    # Pull in anything worth remembering from earlier conversations.
+    try:
+        from memory import format_memories, is_available, retrieve_memories
+
+        if await is_available():
+            memories = await retrieve_memories(user_id, user_message, top_k=6)
+            memories_text = format_memories(memories)
+            if memories_text:
+                messages.insert(1, {"role": "system", "content": memories_text})
+    except Exception as exc:
+        print(f"memory retrieval failed: {exc}")
+
     # Keep the whole conversation, but compact it if it has grown too large.
     # Older turns are summarised rather than dropped, so the model keeps the
     # thread of what the user wants.
@@ -742,7 +755,33 @@ async def get_nvidia_response_full(user_id, user_message, channel=None, attachme
 
     result["files"] = [p for p in tracker if os.path.exists(p)]
     result["footer"] = _footer_for(result)
+
+    # Learn from this exchange in the background, so it never delays the reply.
+    _schedule_memory_update(user_id, user_message, result["answer"])
+
     return result
+
+
+def _schedule_memory_update(user_id, user_message: str, answer: str):
+    """Extract durable facts from the exchange and store them."""
+    async def run():
+        try:
+            from memory import extract_memories, is_available, store_memories
+
+            if not await is_available():
+                return
+            memories = await extract_memories(
+                f"USER: {user_message}\n\nASSISTANT: {answer}"
+            )
+            if memories:
+                await store_memories(user_id, memories)
+        except Exception as exc:
+            print(f"memory update failed: {exc}")
+
+    try:
+        asyncio.create_task(run())
+    except RuntimeError:
+        pass
 
 
 async def get_nvidia_response(user_id, user_message, channel=None):
