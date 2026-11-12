@@ -85,16 +85,25 @@ Discord does not render LaTeX in chat, so the bot renders it for you:
 | Input | Output |
 |---|---|
 | `$x^2$`, `$\alpha$`, `$\frac{1}{2}$` | Unicode text inline — `x²`, `α`, `1/2` |
-| `$$...$$`, `\[...\]` | A rendered PNG attached to the message |
+| `$$...$$`, `\[...\]` | A rendered PNG attached next to the text it belongs to |
 
-Display equations are rendered with matplotlib's `mathtext` engine on Discord's
-dark-theme background (`#313338`), so they blend in rather than sitting as a
-white rectangle. Each reply can carry up to 5 equation images; beyond that the
-remaining equations fall back to Unicode text so a message never turns into an
-image dump.
+Display equations are typeset by **KaTeX** (which parses and validates the
+LaTeX) and **MathJax** (which lays it out — `aligned`, `matrix`, `cases` and
+friends all come out correctly), then rasterised to PNG on Discord's
+dark-theme background (`#313338`) so they blend in rather than floating as a
+white rectangle.
+
+Images are interleaved with the text: an equation appears immediately after the
+paragraph that introduces it, not piled up at the end. Each reply carries at
+most 5 equation images; beyond that the remaining equations fall back to
+Unicode text so a message never turns into an image dump.
 
 Fenced code blocks are never touched — Python source containing `$` or
 `\frac` is left exactly as written.
+
+Requires Node.js plus `katex` and `mathjax-full` (see `render/`). If those
+are missing the bot falls back to matplotlib's `mathtext`, which handles simple
+expressions but not multi-line environments.
 
 ## Commands
 
@@ -155,7 +164,9 @@ answered directly without starting a job.
 | `jobs.py` | Background research jobs |
 | `storage.py` | Supabase persistence (history, facts, chat mode) |
 | `discord_utils.py` | Message splitting, sending, and math rendering |
-| `mathrender.py` | LaTeX → Unicode text and LaTeX → PNG |
+| `mathrender.py` | LaTeX → Unicode text, and message-level math processing |
+| `latex_render.py` | LaTeX → PNG via KaTeX + MathJax |
+| `render/` | Node renderer script and npm dependencies |
 | `diagrams.py` | Node/edge spec → Excalidraw sketch, with grid layout |
 | `excalidraw_render.py` | Excalidraw JSON → PNG |
 | `requirements.txt` | Python dependencies |
@@ -254,6 +265,20 @@ create table chat_mode (
    `DISCORD_TOKEN`, `NVIDIA_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`,
    and optionally `GROQ_API_KEY`, `DAYTONA_API_KEY`, `LANGSEARCH_API_KEY`,
    `WOLFRAM_APP_ID`.
+
+### Local setup for math rendering
+
+Math needs Node.js. From the project folder:
+
+```bash
+cd render && npm install && cd ..
+```
+
+Then set `NODE_BINARY` if `node` is not already on your `PATH`:
+
+```bash
+export NODE_BINARY=$(which node)
+```
 
 ### Keep it awake
 

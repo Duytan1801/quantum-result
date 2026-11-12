@@ -333,50 +333,67 @@ def extract_display_math(text: str):
     return _DISPLAY_MATH.sub(grab, text), blocks
 
 
+def _inline_to_unicode(text: str) -> str:
+    """Convert inline math to Unicode. Escaped dollars are protected first so a
+    literal "$100" is never treated as the start of a formula."""
+    text = _ESCAPED_DOLLAR.sub(_DOLLAR_SENTINEL, text)
+
+    def inline_sub(m):
+        latex = m.group(1) if m.group(1) is not None else m.group(2)
+        return latex_to_unicode(latex)
+
+    text = _INLINE_MATH.sub(inline_sub, text)
+    return text.replace(_DOLLAR_SENTINEL, "$")
+
+
 def process_math(text: str, render_dir: str = None, max_images: int = 5):
     """Convert math in a message for Discord.
 
-    Returns (cleaned_text, list_of_image_paths). Display math becomes image
-    files (if render_dir is given); inline math becomes Unicode text.
-    """
-    if not text or ("$" not in text and "\\" not in text and "^" not in text):
-        return text, []
+    Returns an ordered list of parts, so a rendered equation stays next to the
+    text it belongs to instead of all the images piling up at the end.
 
-    pieces = []
-    images = []
+    Each part is ("text", str) or ("image", path).
+    """
+    if not text:
+        return []
+
+    parts = []
 
     for is_code, chunk in split_code_blocks(text):
         if is_code:
-            pieces.append(chunk)
+            parts.append(("text", chunk))
             continue
 
-        cleaned, display_blocks = extract_display_math(chunk)
+        # Split the chunk into alternating text and equation sections, keeping
+        # the original order.
+        pos = 0
+        for match in _DISPLAY_MATH.finditer(chunk):
+            if match.start() > pos:
+                parts.append(("text", _inline_to_unicode(chunk[pos:match.start()])))
+            latex = (match.group(1) if match.group(1) is not None
+                     else match.group(2)).strip()
 
-        # Render display math to images where possible.
-        if display_blocks and render_dir:
-            os.makedirs(render_dir, exist_ok=True)
-            for latex in display_blocks:
-                if len(images) >= max_images:
-                    # Too many - fall back to Unicode text for the rest.
-                    cleaned = cleaned.replace("\n\n", f"\n{latex_to_unicode(latex)}\n\n", 1)
-                    continue
-                path = os.path.join(render_dir, f"equation_{len(images) + 1}.png")
-                if render_latex_png(latex, path):
-                    images.append(path)
-                else:
-                    cleaned = cleaned.replace("\n\n", f"\n{latex_to_unicode(latex)}\n\n", 1)
+            image = None
+            made = sum(1 for p in parts if p[0] == "image")
+            if render_dir and made < max_images:
+                os.makedirs(render_dir, exist_ok=True)
+                path = os.path.join(render_dir, f"equation_{made + 1}.png")
+                try:
+                    from latex_render import render_latex_png
 
-        # Inline math -> Unicode. Escaped dollars are protected first so that
-        # a literal "$100" is never treated as the start of an inline formula.
-        cleaned = _ESCAPED_DOLLAR.sub(_DOLLAR_SENTINEL, cleaned)
+                    if render_latex_png(latex, path):
+                        image = path
+                except Exception as exc:
+                    print(f"could not render equation: {exc}")
 
-        def inline_sub(m):
-            latex = m.group(1) if m.group(1) is not None else m.group(2)
-            return latex_to_unicode(latex)
+            if image is not None:
+                parts.append(("image", image))
+            else:
+                # Fall back to readable Unicode text.
+                parts.append(("text", f"\n{latex_to_unicode(latex)}\n"))
+            pos = match.end()
 
-        cleaned = _INLINE_MATH.sub(inline_sub, cleaned)
-        cleaned = cleaned.replace(_DOLLAR_SENTINEL, "$")
-        pieces.append(cleaned)
+        if pos < len(chunk):
+            parts.append(("text", _inline_to_unicode(chunk[pos:])))
 
-    result = "".join(pieces)
-    return result, images
+    return parts

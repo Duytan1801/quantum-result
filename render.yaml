@@ -2,9 +2,14 @@ services:
   - type: web
     name: quantum-discord-bot
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      curl -fsSL https://nodejs.org/dist/v20.18.0/node-v20.18.0-linux-x64.tar.xz | tar -xJ -C /opt
+      /opt/node-v20.18.0-linux-x64/bin/npm install --prefix ./render --no-audit --no-fund
+      pip install -r requirements.txt
     startCommand: python main.py
     envVars:
+      - key: NODE_BINARY
+        value: /opt/node-v20.18.0-linux-x64/bin/node
       - key: DISCORD_TOKEN
         sync: false
       - key: NVIDIA_API_KEY
