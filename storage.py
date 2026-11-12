@@ -1,4 +1,9 @@
-"""Supabase persistence: conversation history and remembered user facts."""
+"""Supabase persistence: conversation history and remembered user facts.
+
+NOTE: user_id is a text column, so a PostgREST filter like
+``user_id=like.__*`` treats ``_`` as a single-character wildcard and matches
+EVERY user. Always filter with an exact ``eq.`` value, never a LIKE pattern.
+"""
 
 import asyncio
 

@@ -9,6 +9,7 @@ from tools import (
     edit_file,
     read_file,
     run_code_in_sandbox,
+    verify_claims,
     web_search,
     wolfram_alpha,
     write_file,
@@ -22,8 +23,50 @@ STATUS_LABELS = {
     "read_file": "📖 Reading file...",
     "write_file": "📝 Writing file...",
     "edit_file": "✏️ Editing file...",
-    "start_research_job": "⏳ Starting a background research job...",
+    "verify_claims": "🧮 Recomputing figures...",
+    "start_agent_task": "⏳ Starting a background agent...",
 }
+
+# Words that signal the answer depends on the world as it is *now*. If the
+# user asks anything matching these, the model is told to search before it
+# answers rather than trusting its training data.
+_FRESHNESS_MARKERS = (
+    "latest", "recent", "recently", "today", "tonight", "now", "right now",
+    "currently", "current", "these days", "nowadays", "this week", "this month",
+    "this year", "this morning", "this afternoon", "this evening", "so far",
+    "yesterday", "tomorrow", "up to date", "up-to-date", "as of",
+    "news", "price", "prices", "share price", "stock price", "market cap",
+    "market", "earnings", "revenue", "guidance", "forecast", "outlook",
+    "who is the ceo", "who is the cto", "who is the founder", "still alive",
+    "alive", "dead", "died", "announced", "announced", "released", "launched",
+    "acquired", "merger", "ipo", "layoffs", "version", "release",
+)
+
+# Explicit year mentions - a question pinned to a year is about that period.
+_RECENT_YEARS = ("2024", "2025", "2026", "2027")
+
+
+def needs_fresh_data(message: str) -> bool:
+    """Does this question depend on information that may be out of date?"""
+    text = (message or "").lower()
+    if any(marker in text for marker in _FRESHNESS_MARKERS):
+        return True
+    return any(year in text for year in _RECENT_YEARS)
+
+
+FRESHNESS_REMINDER = (
+    "This question may depend on information that has changed since your training "
+    "data. Before you answer:\n"
+    "1. Use web_search to get current, authoritative sources. Do not answer from "
+    "memory.\n"
+    "2. Prefer a primary source (the company's own filings, the official "
+    "announcement, the regulator) over a summary of one.\n"
+    "3. If sources disagree, report the disagreement rather than picking one "
+    "silently.\n"
+    "4. Run every derived figure through verify_claims before you state it, and "
+    "correct anything that does not add up.\n"
+    "5. Say so plainly if you could not verify something."
+)
 
 
 def build_system_prompt(user_facts: dict) -> str:
@@ -67,13 +110,43 @@ def build_system_prompt(user_facts: dict) -> str:
         "- Answer directly instead of delegating only for single lookups, quick "
         "facts, and maths - anything one tool call can settle."
         "\n\n"
-        "How to answer well:\n"
-        "- Ground every factual claim in what a tool actually returned. If a tool did not "
-        "give you the number, date, or name, do not state it from memory. Say what is missing.\n"
+        "Sourcing rules - these are not optional:\n"
+        "- If a question could have a different answer today than it did a year "
+        "ago, you MUST search before answering. Prices, financials, earnings, "
+        "headcounts, prices, product versions, who holds a role, what was "
+        "announced, market conditions, anything 'latest' or 'current'. Your "
+        "training data is not a source for these.\n"
+        "- Prefer primary sources: the company's own filings, its press release, "
+        "the regulator, the official documentation. Use secondary coverage to "
+        "interpret, not to establish the fact.\n"
+        "- Date every figure. If you do not know when a source was published, "
+        "say that instead of presenting it as current.\n"
+        "- When sources conflict, show the conflict and both numbers rather "
+        "than silently picking one.\n"
+        "\n"
+        "Verification rules - these are not optional:\n"
+        "- Never state a derived figure you have not actually computed. Growth "
+        "rates, percentages, totals, differences, ratios, sums, averages, "
+        "differences between two numbers, anything you did to get from a source "
+        "figure: compute it with verify_claims, code or wolfram_alpha, and use "
+        "the computed value.\n"
+        "- Use verify_claims to check the figures you are about to publish: pass "
+        "the expression and the value you intend to state, and correct any "
+        "mismatch before you write the answer.\n"
+        "- When you compute a figure from a source's raw numbers, recompute it "
+        "rather than trusting a percentage the source printed - sources are "
+        "often wrong, and sometimes deliberately round.\n"
+        "- If a recomputation contradicts what a source claimed, trust the "
+        "recomputation and flag the discrepancy.\n"
+        "- Keep the arithmetic visible in the answer so the user can check it."
+        "\n\n"
+        "Honesty rules:\n"
+        "- Ground every factual claim in what a tool actually returned. If a tool "
+        "did not give you the number, date, or name, do not state it from memory. "
+        "Say what is missing.\n"
         "- Distinguish what a source reported from what you inferred. Flag estimates "
-        "explicitly, and flag it when two sources disagree rather than silently picking one.\n"
-        "- Prefer showing the work over asserting the conclusion: include the key figures, "
-        "the units, and the source.\n"
+        "explicitly, and flag it when two sources disagree rather than silently "
+        "picking one.\n"
         "- If you could not verify something, say so plainly. Never fill a gap with a "
         "plausible-sounding number.\n"
         "- When you finish, offer one concrete next step you could take (a specific search, "
@@ -115,6 +188,28 @@ def _footer_for(result: dict) -> str:
     return " · ".join(parts)
 
 
+def _check_delegation_tool() -> bool:
+    """Warn loudly if the delegation tool and its handler disagree.
+
+    A mismatch here previously killed every turn silently: the tool raised
+    ImportError, nothing caught it, and the bot went quiet mid-conversation.
+    We only warn rather than exiting, so a bad deploy degrades one feature
+    instead of taking the whole bot offline.
+    """
+    tool_names = {t["function"]["name"] for t in TOOLS}
+    if "start_agent_task" not in tool_names:
+        print("ERROR: start_agent_task is missing from the tool list - the model "
+              "would call a tool that does not exist.")
+        return False
+    try:
+        from jobs import start_agent_task  # noqa: F401
+    except ImportError as exc:
+        print(f"ERROR: jobs.start_agent_task could not be imported ({exc}). "
+              "The model calls start_agent_task, so this must exist.")
+        return False
+    return True
+
+
 async def _run_tool(name: str, args: dict, channel=None, user_id=None) -> str:
     """Execute one tool by name with already-parsed arguments."""
     if name == "wolfram_alpha":
@@ -137,6 +232,8 @@ async def _run_tool(name: str, args: dict, channel=None, user_id=None) -> str:
             args.get("old_string", ""),
             args.get("new_string", ""),
         )
+    if name == "verify_claims":
+        return await verify_claims(args.get("checks") or [])
     if name == "start_agent_task":
         # Imported lazily: jobs imports this module, so a top-level import
         # would be circular.
@@ -319,7 +416,16 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                 args = {}
                 result = f"Error: Invalid JSON arguments for {tc['name']} tool"
             else:
-                result = await _run_tool(tc["name"], args, channel, user_id)
+                # A tool that raises must not kill the whole turn - the model
+                # needs to see the error so it can recover or answer directly.
+                try:
+                    result = await _run_tool(tc["name"], args, channel, user_id)
+                except Exception as exc:
+                    result = f"Error: {tc['name']} tool failed: {exc}"
+                    if channel:
+                        await channel.send(
+                            f"⚠️ The `{tc['name']}` tool failed: {str(exc)[:150]}"
+                        )
 
             messages.append({
                 "role": "tool",
@@ -363,6 +469,7 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
 
 async def get_nvidia_response_full(user_id, user_message, channel=None):
     """Answer a message, persist the exchange, and return the answer plus metadata."""
+    _check_delegation_tool()
     history = await db_get_history(user_id)
     user_facts = await db_get_user_facts(user_id)
 
@@ -381,6 +488,12 @@ async def get_nvidia_response_full(user_id, user_message, channel=None):
     messages.extend(history_to_messages(history_to_use))
     messages.append({"role": "user", "content": user_message})
     await db_add_message(user_id, "user", user_message)
+
+    # If the question depends on the world as it is now, remind the model to
+    # source and verify before answering. Cheap to add, and it stops the model
+    # confidently answering from stale training data.
+    if needs_fresh_data(user_message):
+        messages.insert(1, {"role": "system", "content": FRESHNESS_REMINDER})
 
     result = await run_agent_loop(
         messages,

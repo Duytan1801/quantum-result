@@ -14,8 +14,10 @@ def _tool_subset(*names: str) -> list:
     return [by_name[n] for n in names if n in by_name]
 
 
-RESEARCH_TOOLS = ("web_search", "read_file", "write_file", "edit_file", "code", "wolfram_alpha")
-ANALYZE_TOOLS = ("code", "wolfram_alpha", "web_search", "read_file", "write_file", "edit_file")
+RESEARCH_TOOLS = ("web_search", "read_file", "write_file", "edit_file", "code",
+                  "wolfram_alpha", "verify_claims")
+ANALYZE_TOOLS = ("code", "wolfram_alpha", "web_search", "read_file", "write_file",
+                 "edit_file", "verify_claims")
 CODE_TOOLS = ("code", "read_file", "write_file", "edit_file", "web_search")
 EXPLORE_TOOLS = ("web_search", "read_file", "code", "wolfram_alpha")
 
@@ -40,6 +42,11 @@ AGENTS: dict[str, dict] = {
             "not give you a number, do not state it - flag it as unverified. If "
             "sources disagree, show the conflict rather than resolving it "
             "silently. Distinguish reported figures from your own estimates.\n"
+            "Recompute every derived figure with verify_claims before you write "
+            "it down. If a source's own percentage disagrees with your "
+            "recomputation, trust the recomputation and flag the discrepancy.\n"
+            "Date every figure and prefer primary sources - filings, official "
+            "announcements, the regulator - over coverage of them.\n"
             "IMPORTANT: write your deliverable to files as you go, not only at the "
             "end. Use write_file to save each major section as its own markdown "
             "file (e.g. report_1_summary.md, report_2_findings.md) as soon as you "
@@ -69,6 +76,9 @@ AGENTS: dict[str, dict] = {
             "wolfram_alpha for closed-form maths. Verify your numbers before "
             "reporting them, and say explicitly which inputs were assumed "
             "versus measured.\n"
+            "Run every derived figure through verify_claims before you publish "
+            "it, and correct any mismatch - a simulation that reports a total "
+            "that does not match its parts is a bug, not a rounding issue.\n"
             "Write the model, its assumptions, and the results to files "
             "(e.g. model.md, results.md) with the code, so the user can "
             "reproduce them. Keep your chat summary to the headline numbers and "
@@ -114,7 +124,8 @@ AGENTS: dict[str, dict] = {
             "You are exploring a topic or a codebase to answer a question. Be "
             "efficient: a handful of targeted searches or reads, then answer. "
             "Do not pad the answer with caveats or a long report - the user "
-            "asked a focused question. Cite what you found."
+            "asked a focused question. Cite what you found, and date anything "
+            "time-sensitive so the user knows how current it is."
         ),
     },
 }

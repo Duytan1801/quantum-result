@@ -183,6 +183,155 @@ async def web_search(query: str, count: int = 5, freshness: str = "noLimit",
 
 
 # ---------------------------------------------------------------------------
+# Figure verification
+# ---------------------------------------------------------------------------
+# The model must not assert arithmetic it has not actually performed. This
+# evaluates the expressions behind its claims so the numbers can be checked
+# against a real engine rather than trusted from the model's head.
+#
+# Expressions are evaluated with a whitelisted AST walker - no names, no
+# attribute access, no arbitrary calls - so nothing can escape the sandbox.
+
+import ast
+import math
+
+_SAFE_FUNCS = {
+    "sqrt": math.sqrt, "abs": abs, "round": round, "floor": math.floor,
+    "ceil": math.ceil, "fabs": math.fabs, "exp": math.exp, "log": math.log,
+    "log2": math.log2, "log10": math.log10, "pow": pow, "min": min, "max": max,
+    "sum": sum, "factorial": math.factorial, "gcd": math.gcd, "log1p": math.log1p,
+}
+
+_SAFE_CONSTS = {"pi": math.pi, "e": math.e, "tau": math.tau, "inf": math.inf}
+
+_BIN_OPS = {
+    ast.Add: lambda a, b: a + b,
+    ast.Sub: lambda a, b: a - b,
+    ast.Mult: lambda a, b: a * b,
+    ast.Div: lambda a, b: a / b,
+    ast.FloorDiv: lambda a, b: a // b,
+    ast.Mod: lambda a, b: a % b,
+    ast.Pow: lambda a, b: a ** b,
+}
+
+_MAX_POW = 10000  # stop 10**1000000 style blow-ups
+
+
+def _safe_eval(expr: str):
+    """Evaluate an arithmetic expression using only whitelisted operations."""
+    tree = ast.parse(expr, mode="eval")
+
+    def walk(node):
+        if isinstance(node, ast.Expression):
+            return walk(node.body)
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+                raise ValueError("only numbers are allowed")
+            return node.value
+        if isinstance(node, ast.BinOp):
+            op = _BIN_OPS.get(type(node.op))
+            if op is None:
+                raise ValueError(f"operator {type(node.op).__name__} not allowed")
+            left, right = walk(node.left), walk(node.right)
+            if isinstance(node.op, ast.Pow) and abs(right) > _MAX_POW:
+                raise ValueError("exponent too large")
+            return op(left, right)
+        if isinstance(node, ast.UnaryOp):
+            operand = walk(node.operand)
+            if isinstance(node.op, ast.USub):
+                return -operand
+            if isinstance(node.op, ast.UAdd):
+                return operand
+            raise ValueError("unary operator not allowed")
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name) or node.func.id not in _SAFE_FUNCS:
+                raise ValueError("function not allowed")
+            if node.keywords:
+                raise ValueError("keyword arguments not allowed")
+            return _SAFE_FUNCS[node.func.id](*[walk(a) for a in node.args])
+        if isinstance(node, ast.Name):
+            if node.id in _SAFE_CONSTS:
+                return _SAFE_CONSTS[node.id]
+            raise ValueError(f"name '{node.id}' is not allowed")
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return [walk(e) for e in node.elts]
+        raise ValueError(f"{type(node).__name__} not allowed")
+
+    return walk(tree)
+
+
+def _fmt(value) -> str:
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return str(value)
+        if abs(value - round(value)) < 1e-9:
+            return str(int(round(value)))
+        return f"{value:.6g}"
+    return str(value)
+
+
+async def verify_claims(checks: list) -> str:
+    """Recompute the arithmetic behind claimed figures and report mismatches.
+
+    Each check is {"expression": "<arithmetic>", "claimed": "<value>"} where
+    `claimed` is what the answer asserts. The expression is evaluated here and
+    compared, so any figure the model states can be proven rather than trusted.
+    """
+    if not checks:
+        return "Error: no checks supplied."
+
+    lines = []
+    mismatches = 0
+    for i, check in enumerate(checks, 1):
+        if not isinstance(check, dict):
+            lines.append(f"{i}. ERROR: check must be an object")
+            mismatches += 1
+            continue
+        expr = str(check.get("expression", "")).strip()
+        claimed = check.get("claimed")
+        if not expr:
+            lines.append(f"{i}. ERROR: missing expression")
+            mismatches += 1
+            continue
+        try:
+            actual = _safe_eval(expr)
+        except Exception as exc:
+            lines.append(f"{i}. ERROR: could not evaluate {expr!r}: {exc}")
+            mismatches += 1
+            continue
+
+        actual_s = _fmt(actual)
+        if claimed is None:
+            lines.append(f"{i}. OK  {expr} = {actual_s}")
+            continue
+        claimed_s = str(claimed).strip()
+        try:
+            claimed_num = float(claimed_s.replace(",", "").replace("$", "").rstrip("%"))
+        except ValueError:
+            lines.append(f"{i}. OK  {expr} = {actual_s} (claimed: {claimed_s})")
+            continue
+        try:
+            actual_num = float(actual_s)
+        except (TypeError, ValueError):
+            lines.append(f"{i}. OK  {expr} = {actual_s} (claimed: {claimed_s})")
+            continue
+
+        # Allow a small relative tolerance for rounding in the claim.
+        tolerance = max(abs(claimed_num) * 0.005, 0.005)
+        if abs(actual_num - claimed_num) <= tolerance:
+            lines.append(f"{i}. OK  {expr} = {actual_s} (claimed {claimed_s})")
+        else:
+            mismatches += 1
+            lines.append(
+                f"{i}. MISMATCH  {expr} = {actual_s}, but the answer claims "
+                f"{claimed_s}. Fix the number before presenting it."
+            )
+
+    header = f"Recomputed {len(checks)} figure(s); {mismatches} mismatch(es)."
+    return header + "\n" + "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # File tools
 # ---------------------------------------------------------------------------
 async def read_file(file_path: str) -> str:
@@ -347,6 +496,52 @@ TOOLS = [
                     "new_string": {"type": "string", "description": "Text to replace old_string with"},
                 },
                 "required": ["file_path", "old_string", "new_string"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_claims",
+            "description": (
+                "Recompute the arithmetic behind figures you are about to state and "
+                "check them against what you claimed. Each check needs the expression "
+                "that produces the number (e.g. '(127.6 - 90.2) / 90.2 * 100') and the "
+                "value you intend to publish (e.g. '41.6'). Use this for EVERY derived "
+                "figure you are about to give - growth rates, percentages, totals, "
+                "differences, ratios, sums, averages - and for any figure you computed "
+                "mentally rather than reading it off a source. It returns a pass/mismatch "
+                "verdict per figure so you can correct anything that does not add up. "
+                "Do not present a derived number you have not run through this."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "checks": {
+                        "type": "array",
+                        "description": "The figures to recompute and check.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "expression": {
+                                    "type": "string",
+                                    "description": (
+                                        "Arithmetic expression producing the figure, "
+                                        "e.g. '(127.6 - 90.2) / 90.2 * 100'. Plain "
+                                        "arithmetic only - numbers, + - * / // % **, "
+                                        "parentheses, and functions like sqrt/log/abs."
+                                    ),
+                                },
+                                "claimed": {
+                                    "type": "string",
+                                    "description": "The value you intend to publish.",
+                                },
+                            },
+                            "required": ["expression", "claimed"],
+                        },
+                    },
+                },
+                "required": ["checks"],
             },
         },
     },

@@ -15,9 +15,39 @@ Conversations are stored in Supabase so the bot remembers you between sessions.
 | Memory / history | Supabase (`conversation_history`, `user_facts`, `chat_mode`) |
 
 The agent can call tools in a loop: it computes with WolframAlpha, runs code,
-searches the web, and reads/writes/edits files in a sandboxed workspace before
-answering. Every reply ends with a small grey footer naming the model and the
-tools that were used.
+searches the web, verifies its own arithmetic, and reads/writes/edits files in
+a sandboxed workspace before answering. Every reply ends with a small grey
+footer naming the model and the tools that were used.
+
+## Sourcing and verification
+
+The bot is built to not answer from stale memory or from arithmetic it did in
+its head.
+
+**Always source.** Questions that could have a different answer today than last
+year trigger a mandatory search — prices, financials, earnings, product
+versions, who holds a role, anything "latest" or "current". The prompt requires
+primary sources (filings, official announcements, the regulator) over coverage
+of them, and dates every figure it quotes.
+
+**Always recompute.** Derived numbers — growth rates, percentages, totals,
+differences, ratios, sums — are never stated from the model's head. The
+`verify_claims` tool recomputes the expression behind each figure with a
+whitelisted AST evaluator and reports a pass/mismatch verdict, so the model
+catches its own arithmetic errors before publishing them. If a source's printed
+percentage disagrees with the recomputation, the bot trusts the recomputation
+and flags the discrepancy.
+
+```
+verify_claims({"checks": [
+  {"expression": "(127.6 - 90.2) / 90.2 * 100", "claimed": "41.5"}
+]})
+→ 1. OK  (127.6 - 90.2) / 90.2 * 100 = 41.4634 (claimed 41.5)
+```
+
+The evaluator only allows numbers, `+ - * / // % **`, parentheses, and
+functions like `sqrt`/`log`/`abs` — no names, no attribute access, no calls
+outside a whitelist.
 
 ## Commands
 
@@ -73,7 +103,7 @@ answered directly without starting a job.
 | `main.py` | Entrypoint: Discord bot setup, commands, event handlers |
 | `config.py` | Environment configuration and provider clients |
 | `agent.py` | The agent loop: prompt, context assembly, tool dispatch |
-| `tools.py` | Tool schemas and implementations (WolframAlpha, search, files) |
+| `tools.py` | Tool schemas and implementations (WolframAlpha, search, files, verify) |
 | `sandbox.py` | Sandboxed code execution via Daytona |
 | `jobs.py` | Background research jobs |
 | `storage.py` | Supabase persistence (history, facts, chat mode) |

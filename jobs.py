@@ -17,6 +17,7 @@ from agents import AGENTS, get_agent
 from config import JOB_TICK_SECONDS
 from discord_utils import send_long
 from agent import run_agent_loop
+from storage import db_add_message
 from tools import written_files
 
 JOBS: dict[str, dict] = {}
@@ -48,6 +49,31 @@ def _save_job_state():
         pass
 
 
+def _save_running_jobs():
+    """Record which jobs were running, so a restart can report them lost."""
+    try:
+        os.makedirs(os.path.dirname(JOB_STATE_FILE), exist_ok=True)
+        running = [
+            {"id": j["id"], "topic": j["topic"], "agent": j.get("agent", "research"),
+             "channel_id": j.get("channel_id")}
+            for j in JOBS.values() if j.get("status") == "running"
+        ]
+        with open(JOB_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"counter": _job_counter, "running": running}, f)
+    except Exception:
+        pass
+
+
+def _load_running_jobs() -> list[dict]:
+    """Jobs that were running when the process last stopped."""
+    try:
+        with open(JOB_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("running", [])
+    except Exception:
+        return []
+
+
 async def next_job_id() -> str:
     global _job_counter
     async with _job_lock:
@@ -66,6 +92,33 @@ def _set_status(job_id: str, status: str):
     job = JOBS.get(job_id)
     if job is not None:
         job["status"] = status
+
+
+# How much of an agent's summary to keep in the conversation history.
+_SUMMARY_LIMIT = 3000
+
+
+async def record_job_result(user_id, topic: str, agent_name: str, summary: str,
+                             files: list[str]):
+    """Store an agent's outcome in the user's conversation history.
+
+    The agent runs detached from the conversation, so without this the main
+    model has no idea the work happened - it will happily contradict its own
+    report on the next question.
+    """
+    if not user_id:
+        return
+    try:
+        file_names = ", ".join(os.path.basename(p) for p in files) or "none"
+        body = (
+            f"[background {agent_name} agent finished]\n"
+            f"Task: {topic}\n"
+            f"Files produced: {file_names}\n\n"
+            f"Findings:\n{summary[:_SUMMARY_LIMIT]}"
+        )
+        await db_add_message(user_id, "assistant", body)
+    except Exception:
+        pass
 
 
 async def _run_job(job_id: str, channel, user_id: str, topic: str, agent_name: str):
@@ -116,6 +169,11 @@ async def _run_job(job_id: str, channel, user_id: str, topic: str, agent_name: s
         summary = answer if answer.strip() else "(job finished with no summary)"
         await send_long(channel, header + summary)
 
+        # Record the outcome in the user's conversation history, so the main
+        # model knows the agent ran and what it found. Without this the bot
+        # forgets its own report and contradicts it on the next question.
+        await record_job_result(user_id, topic, agent_name, summary, files)
+
         for path in files:
             try:
                 await channel.send(file=discord.File(path))
@@ -157,6 +215,7 @@ async def start_agent_task(agent_name: str, topic: str, channel=None,
         "agent": agent_name,
         "topic": topic,
         "user_id": user_id,
+        "channel_id": getattr(channel, "id", None),
         "status": "running",
         "started_at": time.time(),
     }
@@ -181,10 +240,13 @@ async def start_agent_task(agent_name: str, topic: str, channel=None,
                 await channel.send(f"⚠️ Job {job_label(job_id)} failed: {exc}")
             except Exception:
                 pass
+        finally:
+            _save_running_jobs()
 
     task = asyncio.create_task(runner())
     JOBS[job_id]["task"] = task
     task.add_done_callback(lambda t: JOBS.get(job_id, {}).pop("task", None))
+    _save_running_jobs()
 
     return (
         f"Background {spec['label'].lower()} task {job_label(job_id)} started. It is "
@@ -192,6 +254,22 @@ async def start_agent_task(agent_name: str, topic: str, channel=None,
         f"it finishes. Tell the user it has started and that results will appear "
         f"here - do not do the work yourself."
     )
+
+
+def report_interrupted_jobs() -> list[dict]:
+    """Jobs that were running when the process last stopped.
+
+    Their work is gone, so the caller should tell the user rather than
+    leaving them waiting for a result that will never arrive.
+    """
+    running = _load_running_jobs()
+    if running:
+        try:
+            with open(JOB_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump({"counter": _job_counter, "running": []}, f)
+        except Exception:
+            pass
+    return running
 
 
 def list_jobs() -> list[dict]:

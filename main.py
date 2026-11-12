@@ -223,8 +223,24 @@ async def test_piston(ctx):
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-    from jobs import _load_job_state
+    from jobs import _load_job_state, report_interrupted_jobs
     _load_job_state()
+
+    # Jobs that were running when the process stopped are gone. Say so,
+    # rather than leaving the user waiting for a result that never comes.
+    for job in report_interrupted_jobs():
+        try:
+            channel = bot.get_channel(int(job["channel_id"])) if job.get("channel_id") else None
+            if channel is None:
+                continue
+            await channel.send(
+                f"⚠️ **Job {job_label(job['id'])} was interrupted** — the bot "
+                f"restarted while it was running, so its results were lost.\n"
+                f"-# task was: {job['topic'][:120]}\n"
+                f"-# start it again with: !research {job['topic'][:120]}"
+            )
+        except Exception as exc:
+            print(f"could not report interrupted job: {exc}")
     print("------")
 
 
