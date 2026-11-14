@@ -5,26 +5,30 @@ import json
 import os
 
 from config import (
-    CONTEXT_CHAR_BUDGET,
     HISTORY_ROWS,
     MAX_AGENT_STEPS,
     NVIDIA_MODEL,
     provider_chain,
 )
-from agents import AGENTS, TOOLS, agent_catalogue
+from agents import TOOLS, agent_catalogue
+from context import (
+    compact_history,
+    history_to_messages,
+    trim_context,
+)
+from sandbox import run_code_in_sandbox
 from storage import db_add_message, db_get_history, db_get_user_facts
-from tools import written_files
-from vision import build_image_content
 from tools import (
     draw_diagram,
     edit_file,
     read_file,
-    run_code_in_sandbox,
     verify_claims,
     web_search,
     wolfram_alpha,
     write_file,
+    written_files,
 )
+from vision import build_image_content
 
 # Status label shown in Discord for each tool.
 STATUS_LABELS = {
@@ -117,6 +121,8 @@ def build_system_prompt(user_facts: dict) -> str:
         "deliverable is a report, a model, a dataset or a program, delegate.\n"
         "- The agent runs in the background and posts its result with any files "
         "attached when it finishes. Do not do that work yourself in this turn.\n"
+        "- If the request splits into several pieces, start one agent per piece "
+        "in the same turn - they run in parallel while you keep chatting.\n"
         "- After delegating, reply with one short line naming the agent you started "
         "and saying results will be posted here.\n"
         "- Answer directly instead of delegating only for single lookups, quick "
@@ -175,42 +181,6 @@ def build_system_prompt(user_facts: dict) -> str:
         "a specific analysis, or a specific file) so the user can push the work forward."
         + facts_text
     )
-
-
-def history_to_messages(history: list) -> list:
-    """Rebuild API messages from stored conversation rows.
-
-    Two things can break a request:
-      * a "tool" row whose assistant turn is missing - the API rejects a tool
-        result with no matching call;
-      * an assistant turn whose tool_calls have no results, which happens when
-        the fetched window cuts the conversation in the middle of a tool-call
-        group. The API rejects that too, so those calls are stripped.
-    """
-    # Which tool calls actually have a result stored?
-    answered = {row.get("tool_call_id") for row in history if row.get("tool_call_id")}
-
-    messages = []
-    pending_tool_ids = set()
-    for row in history:
-        role = row.get("role")
-        msg = {"role": role, "content": row.get("content") or ""}
-
-        if role == "assistant" and row.get("tool_calls"):
-            calls = [tc for tc in row["tool_calls"] if tc.get("id") in answered]
-            if calls:
-                msg["tool_calls"] = calls
-                pending_tool_ids = {tc["id"] for tc in calls}
-
-        if row.get("tool_call_id"):
-            if row["tool_call_id"] not in pending_tool_ids:
-                continue  # orphaned tool result, skip it
-            pending_tool_ids.discard(row["tool_call_id"])
-            msg["tool_call_id"] = row["tool_call_id"]
-            msg["name"] = row.get("name")
-
-        messages.append(msg)
-    return messages
 
 
 def _footer_for(result: dict) -> str:
@@ -295,75 +265,31 @@ def _is_failure(result: str) -> bool:
     )
 
 
-def _message_size(m) -> int:
-    """Rough size of a message for the context budget.
+async def _summarise_at_limit(messages: list, max_tokens: int) -> str:
+    """One last tool-free call, asking the model to report what it found.
 
-    Image parts are counted as a flat estimate, not their base64 length - a
-    data URL can be megabytes and would blow the budget on its own.
+    Used when the agent hits its step limit: the tool calls it already made
+    hold real work, and throwing that away because the budget ran out is
+    exactly the wrong outcome.
     """
-    content = m.get("content")
-    if isinstance(content, list):
-        size = sum(
-            len(str(p.get("text") or "")) + 2000
-            for p in content
-            if isinstance(p, dict) and p.get("type") == "text"
-        )
-        size += sum(2000 for p in content if isinstance(p, dict) and p.get("type") == "image_url")
-        return size + len(str(m.get("tool_calls") or ""))
-    return len(str(content or "")) + len(str(m.get("tool_calls") or ""))
-
-
-def _transcript(messages: list, limit: int = 60000) -> str:
-    """Render messages as plain text so they can be summarised."""
-    lines = []
-    for m in messages:
-        role = m.get("role", "?")
-        content = str(m.get("content") or "")
-        if role == "tool":
-            content = f"[{m.get('name') or 'tool'}] {content}"
-        elif role == "assistant" and m.get("tool_calls"):
-            names = ", ".join(t["function"]["name"] for t in m["tool_calls"])
-            content = f"(calling {names}) {content}".strip()
-        if content.strip():
-            lines.append(f"{role.upper()}: {content[:4000]}")
-    text = "\n\n".join(lines)
-    return text[:limit] + ("\n\n[...truncated]" if len(text) > limit else "")
-
-
-async def summarize_messages(messages: list) -> str:
-    """Summarise a block of conversation so the model can keep going without it."""
-    if not messages:
-        return ""
-    transcript = _transcript(messages)
-    if not transcript.strip():
-        return ""
-
-    request = {
-        "messages": [
-            {
-                "role": "system",
-                # Keep this prompt short. A long, heavily-specified prompt makes
-                # the reasoning model think for thousands of tokens and return
-                # an empty summary when the budget runs out.
-                "content": (
-                    "List every distinct thing the user asked for (numbered, one per "
-                    "line). Then key findings with sources. Then decisions and "
-                    "preferences. Then open items. Terse, no preamble."
-                ),
-            },
-            {"role": "user", "content": transcript},
-        ],
-        "temperature": 0.2,
-    }
-
+    request = list(messages) + [{
+        "role": "user",
+        "content": (
+            "You have run out of steps. Do not call any more tools. Write the "
+            "final answer now, using only what you have already gathered: "
+            "state what you found, what you did not get to, and point at any "
+            "files you wrote. Be concrete and cite the sources you actually "
+            "used."
+        ),
+    }]
     last_error = None
     for _name, client, model in provider_chain():
-        # The model's max output is 131072. Give the summary that much room:
-        # it is a reasoning model, and a smaller budget makes it spend the
-        # tokens thinking and return an empty summary.
         try:
             response = await client.chat.completions.create(
-                model=model, max_completion_tokens=131072, **request
+                model=model,
+                messages=request,
+                temperature=0.4,
+                max_completion_tokens=max_tokens,
             )
             content = (response.choices[0].message.content or "").strip()
             if content:
@@ -372,111 +298,8 @@ async def summarize_messages(messages: list) -> str:
         except Exception as exc:
             last_error = exc
             continue
-    print(f"could not summarise conversation: {last_error}")
+    print(f"could not summarise at the step limit: {last_error}")
     return ""
-
-
-async def compact_history(messages: list, budget: int = None,
-                          keep_recent: int = None) -> list:
-    """Summarise older turns instead of dropping them (Claude-style).
-
-    The most recent part of the conversation is kept verbatim; everything
-    before it is replaced by a single summary. The summary is carried forward
-    on later turns, so the model never loses the thread.
-    """
-    if budget is None:
-        from config import CONTEXT_CHAR_BUDGET
-        budget = CONTEXT_CHAR_BUDGET
-    if keep_recent is None:
-        from config import KEEP_RECENT_CHARS
-        keep_recent = KEEP_RECENT_CHARS
-
-    if sum(_message_size(m) for m in messages) <= budget:
-        return messages
-
-    # Leading system messages are always kept.
-    head = []
-    i = 0
-    while i < len(messages) and messages[i].get("role") == "system":
-        head.append(messages[i])
-        i += 1
-    body = messages[i:]
-
-    # Walk back from the end, keeping the most recent turns verbatim.
-    keep_from = len(body)
-    acc = 0
-    for idx in range(len(body) - 1, -1, -1):
-        acc += _message_size(body[idx])
-        if acc >= keep_recent:
-            keep_from = idx
-            break
-    older = body[:keep_from]
-    recent = body[keep_from:]
-
-    if not older:
-        return messages
-
-    summary = await summarize_messages(older)
-    if not summary:
-        # Could not summarise - fall back to dropping the oldest tool groups.
-        return trim_context(messages, budget)
-
-    compacted = head + [
-        {"role": "system", "content": f"[Earlier conversation, summarised]\n{summary}"}
-    ] + recent
-    return compacted
-
-
-def trim_context(messages: list, budget: int = None) -> list:
-    """Drop the oldest tool-calling turns when the context grows too large.
-
-    With a high step limit a single turn can accumulate megabytes of tool
-    output and blow the model's context window. Assistant turns that requested
-    tools are dropped together with their results, so a tool result is never
-    separated from the call that produced it.
-    """
-    if budget is None:
-        from config import CONTEXT_CHAR_BUDGET
-        budget = CONTEXT_CHAR_BUDGET
-
-    if sum(_message_size(m) for m in messages) <= budget:
-        return messages
-
-    # Leading system messages are always kept.
-    head = []
-    i = 0
-    while i < len(messages) and messages[i].get("role") == "system":
-        head.append(messages[i])
-        i += 1
-    body = messages[i:]
-
-    # Find each assistant turn that requested tools, and the results after it.
-    groups = []
-    j = 0
-    while j < len(body):
-        if body[j].get("role") == "assistant" and body[j].get("tool_calls"):
-            k = j + 1
-            while k < len(body) and body[k].get("role") == "tool":
-                k += 1
-            groups.append((j, k))
-            j = k
-        else:
-            j += 1
-
-    if not groups:
-        return messages
-
-    # Drop the oldest groups until the context fits. Collect the indices
-    # first - deleting as we go would shift the later group positions.
-    dropped = set()
-    for start, end in groups:
-        kept = [m for i, m in enumerate(body) if i not in dropped]
-        if sum(_message_size(m) for m in head + kept) <= budget:
-            break
-        dropped.update(range(start, end))
-
-    kept = [m for i, m in enumerate(body) if i not in dropped]
-    return head + kept
 
 
 async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGENT_STEPS,
@@ -498,6 +321,11 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
         if step_count >= max_steps:
             if channel:
                 await channel.send(f"⚠️ Reached maximum steps ({max_steps}). Stopping.")
+            if not final_answer.strip():
+                # The agent ran out of budget before producing an answer.
+                # Rather than posting "(no response)", make one last
+                # tool-free call so the work it did is not thrown away.
+                final_answer = await _summarise_at_limit(messages, max_tokens)
             break
         step_count += 1
 
@@ -626,7 +454,10 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
             if tc["name"] not in tools_used:
                 tools_used.append(tc["name"])
 
-        if channel:
+        if channel and on_step is None:
+            # When a caller supplies on_step it does its own reporting (a
+            # background job posts a throttled heartbeat). Sending both
+            # meant two messages per step saying the same thing.
             await channel.send(f"**Step {step_count}** - {' '.join(step_labels)}")
         if on_step is not None:
             await on_step(step_count, max_steps, step_labels)
@@ -737,7 +568,7 @@ async def get_nvidia_response_full(user_id, user_message, channel=None, attachme
     # Keep the whole conversation, but compact it if it has grown too large.
     # Older turns are summarised rather than dropped, so the model keeps the
     # thread of what the user wants.
-    messages = await compact_history(messages)
+    messages = await compact_history(messages, user_id=user_id)
 
     # Track any files written during this turn so generated images (diagrams,
     # plots) can be attached to the reply automatically.
@@ -763,18 +594,30 @@ async def get_nvidia_response_full(user_id, user_message, channel=None, attachme
 
 
 def _schedule_memory_update(user_id, user_message: str, answer: str):
-    """Extract durable facts from the exchange and store them."""
+    """Extract durable facts from the exchange and store them.
+
+    Runs in the background so it never delays the reply, and skips
+    exchanges that cannot contain a durable fact - otherwise every "hi"
+    would cost an LLM call and an embedding call.
+    """
     async def run():
         try:
-            from memory import extract_memories, is_available, store_memories
+            from memory import (
+                extract_memories,
+                is_available,
+                store_memories,
+                worth_extracting,
+            )
 
+            if not worth_extracting(user_message, answer):
+                return
             if not await is_available():
                 return
             memories = await extract_memories(
                 f"USER: {user_message}\n\nASSISTANT: {answer}"
             )
             if memories:
-                await store_memories(user_id, memories)
+                await store_memories(user_id, memories, source="conversation")
         except Exception as exc:
             print(f"memory update failed: {exc}")
 

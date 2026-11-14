@@ -12,6 +12,18 @@ DISCORD_MAX_LEN = 2000
 MAX_EQUATION_IMAGES = 5
 
 
+def fit_discord(text: str, limit: int = DISCORD_MAX_LEN) -> str:
+    """Shorten text so it fits in a single Discord message.
+
+    Discord rejects anything over 2000 characters with "Invalid Form Body",
+    so anything that must be one message goes through here.
+    """
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    return text[:max(0, limit - 1)].rstrip() + "…"
+
+
 def split_message(text: str, max_len: int = DISCORD_MAX_LEN) -> list[str]:
     """Split text into Discord-sized chunks, preferring natural break points.
 
@@ -121,8 +133,6 @@ async def send_long(target, content: str, code_block: bool = False, footer: str 
 
 async def _send(target, content=None, **kwargs):
     """Send to a context, channel or message."""
-    if hasattr(target, "send") and not hasattr(target, "channel"):
-        return await target.send(content, **kwargs)
     if hasattr(target, "send"):
         return await target.send(content, **kwargs)
     return await target.channel.send(content, **kwargs)

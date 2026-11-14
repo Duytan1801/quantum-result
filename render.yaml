@@ -3,8 +3,14 @@ services:
     name: quantum-discord-bot
     env: python
     buildCommand: |
+      # Node is needed for the KaTeX + MathJax renderer. Without it the bot
+      # silently falls back to matplotlib's mathtext, which cannot typeset
+      # \begin{aligned} and friends.
       curl -fsSL https://nodejs.org/dist/v20.18.0/node-v20.18.0-linux-x64.tar.xz | tar -xJ -C /opt
-      /opt/node-v20.18.0-linux-x64/bin/npm install --prefix ./render --no-audit --no-fund
+      export PATH=/opt/node-v20.18.0-linux-x64/bin:$PATH
+      # Call npm through node explicitly: the npm launcher has a
+      # `#!/usr/bin/env node` shebang, so it fails unless node is on PATH.
+      node /opt/node-v20.18.0-linux-x64/lib/node_modules/npm/bin/npm-cli.js install --prefix ./render --no-audit --no-fund
       pip install -r requirements.txt
     startCommand: python main.py
     envVars:
@@ -30,3 +36,5 @@ services:
         sync: false
       - key: WOLFRAM_APP_ID
         sync: false
+      - key: EMBED_MODEL
+        value: nvidia/nemotron-3.5-embed-1b

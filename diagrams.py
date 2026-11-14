@@ -8,7 +8,6 @@ The sketch itself is built with `Excalidraw_Interface` and rendered to PNG by
 `excalidraw_render` so it can be sent on Discord.
 """
 
-import os
 
 # Grid spacing (centre-to-centre).
 COL_SPACING = 280

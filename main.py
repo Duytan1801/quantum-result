@@ -162,8 +162,25 @@ async def recall(ctx, key: str):
 
 @bot.command(name="forget")
 async def forget(ctx, key: str):
+    """Forget a stored fact, and any long-term memory that mentions it."""
     await db_delete_fact(ctx.author.id, key)
-    await ctx.send(f"Forgot {key}.")
+
+    forgotten = 0
+    try:
+        from memory import forget_memories, is_available
+
+        if await is_available():
+            forgotten = await forget_memories(ctx.author.id, key)
+    except Exception as exc:
+        print(f"could not forget semantic memories: {exc}")
+
+    if forgotten:
+        await ctx.send(
+            f"Forgot {key}, and {forgotten} remembered "
+            f"{'detail' if forgotten == 1 else 'details'} that mentioned it."
+        )
+    else:
+        await ctx.send(f"Forgot {key}.")
 
 
 @bot.command(name="sendfile")
@@ -245,6 +262,37 @@ async def test_piston(ctx):
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+
+    # Say whether the proper math renderer is in use. If Node is missing the
+    # bot falls back to matplotlib's mathtext, which cannot typeset
+    # \begin{aligned} and friends - and it does so silently, which makes it
+    # look like the renderer is broken rather than absent.
+    try:
+        from latex_render import renderer_available
+
+        if renderer_available():
+            print("math renderer: KaTeX + MathJax")
+        else:
+            print("math renderer: matplotlib fallback (Node or the render/ "
+                  "packages are missing - multi-line environments will not "
+                  "typeset)")
+    except Exception as exc:
+        print(f"math renderer: unavailable ({exc})")
+
+    # Say whether long-term memory is on. It stays off until
+    # supabase_memory.sql has been run, and it says so rather than failing
+    # quietly on every turn.
+    try:
+        from memory import EMBED_MODEL, is_available
+
+        if await is_available():
+            print(f"long-term memory: on ({EMBED_MODEL})")
+        else:
+            print("long-term memory: OFF - run supabase_memory.sql in the "
+                  "Supabase SQL editor")
+    except Exception as exc:
+        print(f"long-term memory: unavailable ({exc})")
+
     from jobs import _load_job_state, report_interrupted_jobs
     _load_job_state()
 

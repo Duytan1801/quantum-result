@@ -33,7 +33,7 @@ AGENTS: dict[str, dict] = {
         ),
         "label": "Deep research",
         "tools": _tool_subset(*RESEARCH_TOOLS),
-        "max_steps": 30,
+        "max_steps": 100,
         "max_tokens": 8192,
         "prompt": (
             "You are a research agent producing a sourced report. Work "
@@ -67,7 +67,7 @@ AGENTS: dict[str, dict] = {
         ),
         "label": "Quantitative analysis",
         "tools": _tool_subset(*ANALYZE_TOOLS),
-        "max_steps": 20,
+        "max_steps": 100,
         "max_tokens": 8192,
         "prompt": (
             "You are a quantitative analyst. Build the model or run the "
@@ -98,7 +98,7 @@ AGENTS: dict[str, dict] = {
         ),
         "label": "Coding",
         "tools": _tool_subset(*CODE_TOOLS),
-        "max_steps": 20,
+        "max_steps": 100,
         "max_tokens": 8192,
         "prompt": (
             "You are a senior engineer. Write working code, run it, and check "
@@ -119,7 +119,7 @@ AGENTS: dict[str, dict] = {
         ),
         "label": "Exploration",
         "tools": _tool_subset(*EXPLORE_TOOLS),
-        "max_steps": 10,
+        "max_steps": 100,
         "max_tokens": 4096,
         "prompt": (
             "You are exploring a topic or a codebase to answer a question. Be "

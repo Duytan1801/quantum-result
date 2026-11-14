@@ -73,6 +73,8 @@ _SYMBOLS = {
     "mid": "∣", "parallel": "∥", "bigoplus": "⊕", "otimes": "⊗",
     "langle": "⟨", "rangle": "⟩", "lbrace": "{", "rbrace": "}",
     "lbrack": "[", "rbrack": "]", "backslash": "\\",
+    "lvert": "|", "rvert": "|", "lVert": "‖", "rVert": "‖",
+    "vert": "|", "Vert": "‖", "|": "‖",
 }
 
 # Commands whose braced argument is plain text.
@@ -133,15 +135,17 @@ def latex_to_unicode(latex: str) -> str:
     while i < n:
         ch = latex[i]
 
-        # Escaped characters
-        if ch == "\\" and i + 1 < n and latex[i + 1] in "\\{}%&_#$":
-            out.append(latex[i + 1])
+        # A doubled backslash is a row separator in an aligned environment.
+        # This has to be checked before the escaped-character case below,
+        # which would otherwise swallow it and leave a stray backslash.
+        if ch == "\\" and latex.startswith("\\\\", i):
+            out.append("\n")
             i += 2
             continue
 
-        # Line break in an aligned environment
-        if ch == "\\" and latex.startswith("\\\\", i):
-            out.append("\n")
+        # Escaped characters
+        if ch == "\\" and i + 1 < n and latex[i + 1] in "\\{}%&_#$":
+            out.append(latex[i + 1])
             i += 2
             continue
 
@@ -160,8 +164,8 @@ def latex_to_unicode(latex: str) -> str:
                     _env, i = _match_brace(latex, i)
                 continue
 
-            # \frac{a}{b}
-            if name == "frac":
+            # \frac{a}{b}, \tfrac{a}{b}, \dfrac{a}{b}
+            if name in ("frac", "tfrac", "dfrac"):
                 num, i = _match_brace(latex, i) if i < n and latex[i] == "{" else ("", i)
                 den, i = _match_brace(latex, i) if i < n and latex[i] == "{" else ("", i)
                 num_u = latex_to_unicode(num)
@@ -272,7 +276,17 @@ DISCORD_DARK_BG = "#313338"
 
 def render_latex_png(latex: str, path: str, fontsize: int = 22,
                       color: str = "white", background: str = DISCORD_DARK_BG) -> bool:
-    """Render a LaTeX expression to a PNG. Returns True on success."""
+    """Render a LaTeX expression to a PNG. Returns True on success.
+
+    This is the fallback used when the KaTeX + MathJax renderer is not
+    available. matplotlib's mathtext accepts environments like
+    \\begin{aligned} without complaint but draws the LaTeX *source* instead of
+    typesetting it, so an environment is rejected here and the caller falls
+    back to readable Unicode text.
+    """
+    if "\\begin{" in latex:
+        return False
+
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -307,6 +321,56 @@ _ESCAPED_DOLLAR = re.compile(r"\\\$")
 
 # Stand-in for an escaped dollar while inline math is being matched.
 _DOLLAR_SENTINEL = "\x00DOLLAR\x00"
+
+# LaTeX environments that models emit for display math. They are matched
+# without their surrounding $$ or \[...\] delimiters too, because models
+# routinely write a bare \begin{aligned}...\end{aligned} block.
+_ENV_TOKEN = re.compile(r"\\(begin|end)\{([A-Za-z]+)\*?\}")
+
+
+def _find_env_blocks(text: str) -> list[tuple[int, int, str]]:
+    r"""Locate \begin{env}...\end{env} blocks, allowing nested environments.
+
+    Returns (start, end, env_name) for each block, in source order.
+    """
+    blocks = []
+    stack: list[tuple[str, int]] = []
+    for m in _ENV_TOKEN.finditer(text):
+        kind, env = m.group(1), m.group(2)
+        if kind == "begin":
+            stack.append((env, m.start()))
+        else:
+            # Match the nearest open environment with the same name.
+            for idx in range(len(stack) - 1, -1, -1):
+                if stack[idx][0] == env:
+                    start = stack[idx][1]
+                    del stack[idx:]
+                    blocks.append((start, m.end(), env))
+                    break
+    blocks.sort()
+    return blocks
+
+
+def _display_regions(chunk: str) -> list[tuple[int, int, str]]:
+    """Every display-math region in a chunk, in source order.
+
+    Both the delimited forms ($$...$$, \\[...\\]) and bare environment blocks
+    (\\begin{aligned}...\\end{aligned}) are found. A bare block that already sits
+    inside a delimited one is not counted twice.
+    """
+    regions: list[tuple[int, int, str]] = []
+
+    for m in _DISPLAY_MATH.finditer(chunk):
+        latex = m.group(1) if m.group(1) is not None else m.group(2)
+        regions.append((m.start(), m.end(), latex.strip()))
+
+    for start, end, _env in _find_env_blocks(chunk):
+        if any(s <= start and end <= e for s, e, _ in regions):
+            continue  # already covered by a $$ or \[...\] region
+        regions.append((start, end, chunk[start:end].strip()))
+
+    regions.sort()
+    return regions
 
 
 def split_code_blocks(text: str):
@@ -367,11 +431,9 @@ def process_math(text: str, render_dir: str = None, max_images: int = 5):
         # Split the chunk into alternating text and equation sections, keeping
         # the original order.
         pos = 0
-        for match in _DISPLAY_MATH.finditer(chunk):
-            if match.start() > pos:
-                parts.append(("text", _inline_to_unicode(chunk[pos:match.start()])))
-            latex = (match.group(1) if match.group(1) is not None
-                     else match.group(2)).strip()
+        for start, end, latex in _display_regions(chunk):
+            if start > pos:
+                parts.append(("text", _inline_to_unicode(chunk[pos:start])))
 
             image = None
             made = sum(1 for p in parts if p[0] == "image")
@@ -391,7 +453,7 @@ def process_math(text: str, render_dir: str = None, max_images: int = 5):
             else:
                 # Fall back to readable Unicode text.
                 parts.append(("text", f"\n{latex_to_unicode(latex)}\n"))
-            pos = match.end()
+            pos = end
 
         if pos < len(chunk):
             parts.append(("text", _inline_to_unicode(chunk[pos:])))

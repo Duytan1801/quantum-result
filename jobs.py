@@ -15,7 +15,7 @@ import discord
 
 from agents import AGENTS, get_agent
 from config import JOB_TICK_SECONDS
-from discord_utils import send_long
+from discord_utils import DISCORD_MAX_LEN, fit_discord, send_long
 from agent import run_agent_loop
 from storage import db_add_message
 from tools import written_files
@@ -128,14 +128,29 @@ async def _run_job(job_id: str, channel, user_id: str, topic: str, agent_name: s
     token = written_files.set(tracker)
 
     started = time.monotonic()
+    last_progress = 0.0
 
     async def report(step, total, labels):
-        elapsed = int(time.monotonic() - started)
+        """Post a progress line, at most once every JOB_TICK_SECONDS.
+
+        The agent loop also reports each step, but for a long job that is
+        one message per step - dozens of lines saying the same thing. This is
+        the heartbeat that says how far along the job is.
+        """
+        nonlocal last_progress
+        now = time.monotonic()
+        if last_progress and now - last_progress < JOB_TICK_SECONDS:
+            return
+        last_progress = now
+        elapsed = int(now - started)
         mins, secs = divmod(elapsed, 60)
-        await channel.send(
-            f"-# step {step} of {total} · {mins}m{secs:02d}s elapsed · "
-            f"{' '.join(labels)}"
-        )
+        try:
+            await channel.send(
+                f"-# step {step} of {total} · {mins}m{secs:02d}s elapsed · "
+                f"{' '.join(labels)}"
+            )
+        except Exception:
+            pass
 
     try:
         messages = [{
@@ -157,7 +172,7 @@ async def _run_job(job_id: str, channel, user_id: str, topic: str, agent_name: s
         answer = result["answer"]
         files = [p for p in tracker if os.path.exists(p)]
 
-        header = f"**Job {job_label(job_id)} is done** — {topic}\n"
+        header = f"**Job {job_label(job_id)} is done** — {fit_discord(topic, 400)}\n"
         if files:
             header += (
                 f"Delivered as {len(files)} file"
@@ -221,11 +236,21 @@ async def start_agent_task(agent_name: str, topic: str, channel=None,
     }
 
     if channel is not None:
-        await channel.send(
-            f"**⏳ Job {job_label(job_id)} started** — {topic}\n"
-            f"-# {spec['label']} · up to {spec['max_steps']} steps · "
+        # The topic can be thousands of characters long, and Discord rejects
+        # any message over 2000 characters ("Invalid Form Body"). That used to
+        # kill the whole tool call, so the job was created but never ran and
+        # the model had to retry.
+        title = f"**⏳ Job {job_label(job_id)} started** — "
+        footer = (
+            f"\n-# {spec['label']} · up to {spec['max_steps']} steps · "
             f"progress updates every {JOB_TICK_SECONDS}s · results will post here"
         )
+        room = DISCORD_MAX_LEN - len(title) - len(footer) - 1
+        try:
+            await channel.send(title + fit_discord(topic, room) + footer)
+        except Exception as exc:
+            # A failure to announce the job must not stop the job itself.
+            print(f"could not announce job {job_id}: {exc}")
 
     async def runner():
         try:

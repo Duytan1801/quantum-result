@@ -14,7 +14,6 @@ from config import (
     WOLFRAM_APP_ID,
     WOLFRAM_API_URL,
 )
-from sandbox import run_code_in_sandbox
 
 # ---------------------------------------------------------------------------
 # File system workspace (sandboxed)
@@ -695,6 +694,8 @@ TOOLS = [
                 "A specialist with its own budget and workspace will do it better "
                 "and more thoroughly than you can in one turn, so prefer delegating "
                 "when it fits. Do not duplicate the work yourself once delegated.\n"
+                "If the work splits into more than one piece, call this tool once "
+                "per piece in the same turn - the agents then run in parallel.\n"
                 "After starting a task, reply with one short line naming the agent "
                 "you started and saying results will be posted here."
             ),
