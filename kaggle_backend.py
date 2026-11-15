@@ -167,14 +167,20 @@ def _kaggle_api():
     global _api, _api_failed, _api_error
     if _api is not None:
         return _api
-    if _api_failed:
-        return None
 
     token, name = _find_token()
     if token:
         # The SDK only looks at KAGGLE_API_TOKEN, so an alias the user set
         # (KAGGLE_TOKEN, KAGGLE_ACCESS_TOKEN) is normalised into it here.
         os.environ["KAGGLE_API_TOKEN"] = token
+        # If a previous attempt failed - e.g. the six module was missing on
+        # Render's Python 3.14, or a transient network error - clear it and
+        # retry now that credentials are present. We only cache failure
+        # permanently when there are genuinely no credentials at all.
+        if _api_failed:
+            _api_failed = False
+            _api_error = ""
+            _clear_failed_kaggle_imports()
     elif not (_has_legacy_key() or _has_config_file()):
         _api_error = NOT_CONFIGURED
         _api_failed = True
