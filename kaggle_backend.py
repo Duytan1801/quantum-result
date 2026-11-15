@@ -84,6 +84,53 @@ def credentials_source() -> str:
     return ""
 
 
+def force_refresh() -> None:
+    """Clear any cached failure state so the next call retries from scratch.
+
+    Call this after the user has set KAGGLE_API_TOKEN (or restarted Render)
+    so a previous failed attempt doesn't keep returning None.
+    """
+    global _api, _api_failed, _api_error
+    _api = None
+    _api_failed = False
+    _api_error = ""
+    _clear_failed_kaggle_imports()
+
+
+def kaggle_status() -> dict:
+    """A plain-English report of why Kaggle is or isn't available.
+
+    Use this to debug: it checks the env var, the hardcoded fallback, the
+    config file, and a live authentication attempt.
+    """
+    token, name = _find_token()
+    env_set = bool(os.getenv("KAGGLE_API_TOKEN"))
+    report = {
+        "env_KAGGLE_API_TOKEN_set": env_set,
+        "credentials_source": name or "none",
+        "hardcoded_fallback_present": bool(HARDCODED_TOKEN),
+        "legacy_key_present": _has_legacy_key(),
+        "config_file_present": _has_config_file(),
+        "authenticated": False,
+        "error": None,
+    }
+    if not token and not _has_legacy_key() and not _has_config_file():
+        report["error"] = "No Kaggle credentials found anywhere."
+        return report
+    try:
+        force_refresh()
+        client = _kaggle_api()
+        if client is None:
+            report["error"] = _api_error or "authentication returned no client"
+            return report
+        client.competitions_list()
+        report["authenticated"] = True
+    except Exception as exc:
+        report["error"] = f"{type(exc).__name__}: {exc}"
+    return report
+
+
+
 NOT_CONFIGURED = (
     "Kaggle is not configured, so kaggle_run cannot run anything. Set the "
     "KAGGLE_API_TOKEN environment variable to your Kaggle API token (the "

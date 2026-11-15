@@ -256,6 +256,26 @@ async def test_piston(ctx):
     await send_long(ctx, result, code_block=True)
 
 
+@bot.command(name="kaggle")
+async def kaggle_cmd(ctx):
+    """Check whether Kaggle cloud compute is configured. Usage: !kaggle"""
+    from kaggle_backend import force_refresh, kaggle_status
+
+    force_refresh()
+    status = kaggle_status()
+    lines = [f"**Kaggle status**"]
+    lines.append(f"- Env var `KAGGLE_API_TOKEN` set: {status['env_KAGGLE_API_TOKEN_set']}")
+    lines.append(f"- Credentials source: {status['credentials_source'] or 'none'}")
+    lines.append(f"- Hardcoded fallback present: {status['hardcoded_fallback_present']}")
+    lines.append(f"- Legacy key pair present: {status['legacy_key_present']}")
+    lines.append(f"- Config file present: {status['config_file_present']}")
+    if status["authenticated"]:
+        lines.append("- Live authentication: **OK** — Kaggle is ready to run scripts.")
+    else:
+        lines.append(f"- Live authentication: **failed** — {status['error']}")
+    await send_long(ctx, "\n".join(lines))
+
+
 # ---------------------------------------------------------------------------
 # Events
 # ---------------------------------------------------------------------------
@@ -293,19 +313,21 @@ async def on_ready():
     except Exception as exc:
         print(f"long-term memory: unavailable ({exc})")
 
-    # Say whether Kaggle is on. It stays off until a token reaches the
-    # process, and it says so rather than failing on every call.
+    # Say whether Kaggle is on. Report exactly where the credentials came
+    # from and whether a live authentication worked, so you can tell at a
+    # glance whether the token reached the process.
     try:
-        from kaggle_backend import available as kaggle_available
-        from kaggle_backend import credentials_source
+        from kaggle_backend import credentials_source, kaggle_status
 
-        source = credentials_source()
-        if source:
-            print(f"kaggle: {'on' if await kaggle_available() else 'UNREACHABLE'} "
-                  f"(credentials from {source})")
+        status = kaggle_status()
+        if status["authenticated"]:
+            print(f"kaggle: on (credentials from {status['credentials_source']})")
         else:
-            print("kaggle: OFF - no API token found. Set KAGGLE_API_TOKEN "
-                  "to your KGAT_... token (or KAGGLE_USERNAME + KAGGLE_KEY).")
+            src = status["credentials_source"] or "none"
+            print(f"kaggle: OFF - credentials from {src}, but authentication failed:")
+            print(f"  {status['error']}")
+            print("  Set KAGGLE_API_TOKEN in Render's env vars and redeploy, or "
+                  "the built-in fallback should already be in kaggle_backend.py.")
     except Exception as exc:
         print(f"kaggle: unavailable ({exc})")
 
