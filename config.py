@@ -105,3 +105,17 @@ def provider_chain() -> list[tuple[str, AsyncOpenAI, str]]:
     if groq_client is not None:
         chain.append(("Groq", groq_client, GROQ_MODEL))
     return chain
+
+
+def extra_body_for(provider_name: str) -> dict:
+    """Provider-specific request options.
+
+    NVIDIA's Nemotron models can be asked to reason before they answer.
+    The switch is `chat_template_kwargs.enable_thinking` - a top-level
+    `enable_thinking` is rejected with "Unsupported parameter(s)". The
+    reasoning comes back in its own field, so it does not end up in the
+    reply. Groq does not know the flag, so it is only ever sent to NVIDIA.
+    """
+    if provider_name == "NVIDIA":
+        return {"chat_template_kwargs": {"enable_thinking": True}}
+    return {}

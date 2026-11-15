@@ -9,7 +9,12 @@ thread. That logic lives here so the agent loop stays readable.
 
 import hashlib
 
-from config import CONTEXT_CHAR_BUDGET, KEEP_RECENT_CHARS, provider_chain
+from config import (
+    CONTEXT_CHAR_BUDGET,
+    KEEP_RECENT_CHARS,
+    extra_body_for,
+    provider_chain,
+)
 
 
 def history_to_messages(history: list) -> list:
@@ -157,7 +162,10 @@ async def summarize_messages(messages: list) -> str:
         # tokens thinking and return an empty summary.
         try:
             response = await client.chat.completions.create(
-                model=model, max_completion_tokens=131072, **request
+                model=model,
+                max_completion_tokens=131072,
+                extra_body=extra_body_for(_name),
+                **request,
             )
             content = (response.choices[0].message.content or "").strip()
             if content:

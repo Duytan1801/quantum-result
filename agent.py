@@ -9,6 +9,7 @@ from config import (
     HISTORY_ROWS,
     MAX_AGENT_STEPS,
     NVIDIA_MODEL,
+    extra_body_for,
     provider_chain,
 )
 from agents import TOOLS, agent_catalogue
@@ -352,6 +353,7 @@ async def _summarise_at_limit(messages: list, max_tokens: int) -> str:
                 messages=request,
                 temperature=0.4,
                 max_completion_tokens=max_tokens,
+                extra_body=extra_body_for(_name),
             )
             content = (response.choices[0].message.content or "").strip()
             if content:
@@ -378,6 +380,7 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     tools_used = []
     step_count = 0
     failed_count = 0
+    continued = False
 
     while True:
         if step_count >= max_steps:
@@ -408,6 +411,7 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                     stream=True,
                     tools=tools,
                     tool_choice="auto",
+                    extra_body=extra_body_for(_name),
                 )
                 break
             except Exception as exc:
@@ -436,6 +440,11 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                 delta = chunk.choices[0].delta
                 if delta.content:
                     step_content += delta.content
+                # The model's reasoning arrives in its own field. It is not
+                # part of the answer, so it is read and dropped rather than
+                # shown to the user.
+                if getattr(delta, "reasoning_content", None):
+                    pass
                 if chunk.choices[0].finish_reason:
                     finish_reason = chunk.choices[0].finish_reason
                 if delta.tool_calls:
@@ -489,6 +498,12 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                 # The answer was cut off by the token limit and will be
                 # continued, so append rather than replace - otherwise the
                 # earlier part of the answer is lost.
+                final_answer += step_content
+                continued = True
+            elif continued:
+                # The end of an answer that had to be continued: keep the
+                # earlier parts too. Replacing them here used to throw away
+                # the whole first half of the reply.
                 final_answer += step_content
             else:
                 final_answer = step_content

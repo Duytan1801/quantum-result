@@ -9,3 +9,8 @@ matplotlib
 Excalidraw-Interface
 cairosvg
 kaggle
+# The kaggle package imports `six` (kaggle/models/upload_file.py) but does
+# not declare it as a dependency, so without this the import dies half way
+# through and every later attempt fails with a misleading "partially
+# initialized module" error.
+six

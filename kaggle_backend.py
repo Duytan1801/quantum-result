@@ -92,6 +92,29 @@ NOT_CONFIGURED = (
 )
 
 
+def _clear_failed_kaggle_imports():
+    """Remove half-imported kaggle modules from sys.modules.
+
+    The kaggle package has an import cycle: kaggle/__init__.py does
+    `from kaggle.api.kaggle_api_extended import KaggleApi`, and that module
+    imports `six`, which kaggle does not declare as a dependency. When the
+    import fails half way through, Python leaves the partly initialised
+    module in sys.modules, and every later attempt then fails with
+
+        cannot import name 'KaggleApi' from partially initialized module
+        'kaggle.api.kaggle_api_extended' (most likely due to a circular
+        import)
+
+    which hides the real error. Clearing them makes each attempt start
+    clean, so the actual cause is reported instead of a confusing one.
+    """
+    import sys
+
+    for name in [n for n in sys.modules
+                 if n == "kaggle" or n.startswith("kaggle.")]:
+        sys.modules.pop(name, None)
+
+
 def _kaggle_api():
     """Get an authenticated Kaggle client, or None if it is not set up."""
     global _api, _api_failed, _api_error
@@ -111,6 +134,10 @@ def _kaggle_api():
         return None
 
     try:
+        # Start from a clean slate: a previous failed import can leave a
+        # half-built module behind that poisons every later attempt.
+        _clear_failed_kaggle_imports()
+
         from kaggle.api.kaggle_api_extended import KaggleApi
 
         client = KaggleApi()
@@ -124,6 +151,7 @@ def _kaggle_api():
         _api_failed = False
         _api_error = ""
     except Exception as exc:
+        _clear_failed_kaggle_imports()
         _api_error = f"could not set up the Kaggle client: {exc}"
         print(_api_error)
         # Not cached as a permanent failure: the next call tries again, so a
