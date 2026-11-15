@@ -488,12 +488,17 @@ TOOLS = [
                 "the heavy work the quick sandbox is not for: training a model, "
                 "fitting something over a real dataset, or anything that needs a "
                 "GPU, PyTorch, scikit-learn, or a Kaggle dataset mounted for you.\n"
-                "numpy, pandas, scikit-learn, torch and friends are already "
-                "installed, and the script runs with internet access.\n"
-                "IMPORTANT: this takes about 20-30 seconds per run, so prefer the "
-                "code tool for quick snippets and use this one when the job is "
-                "genuinely heavy. The script's stdout is returned, along with "
-                "any files it wrote."
+                "numpy, pandas, scikit-learn, scipy and PyTorch are already "
+                "installed.\n"
+                "IMPORTANT: this machine HAS internet access, so use it for "
+                "anything that needs live data - downloading prices, calling an "
+                "API, pip installing a package. The code tool's sandbox has no "
+                "network, so if a script there failed on a connection, run it "
+                "here instead.\n"
+                "It takes about 20-30 seconds per run, so prefer the code tool "
+                "for quick snippets and use this one when the job is genuinely "
+                "heavy. The script's stdout is returned, along with any files it "
+                "wrote."
             ),
             "parameters": {
                 "type": "object",

@@ -42,27 +42,92 @@ from config import KAGGLE_API_TOKEN
 # the SDK imports.
 _api = None
 _api_failed = False
+_api_error = ""
+
+# Fallback credentials, used when no environment variable reaches the process.
+# The environment variable still wins, so this can be deleted once the token is
+# reliably set in the deployment.
+HARDCODED_TOKEN = "KGAT_438c1c9ee21b06baddc33a0b15336985"
+
+
+def _find_token() -> tuple[str, str]:
+    """Look for a Kaggle API token. Returns (token, where it came from)."""
+    for name in ("KAGGLE_API_TOKEN", "KAGGLE_TOKEN", "KAGGLE_ACCESS_TOKEN"):
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value, name
+    if HARDCODED_TOKEN:
+        return HARDCODED_TOKEN, "built-in fallback"
+    return "", ""
+
+
+def _has_legacy_key() -> bool:
+    """The old username + key pair, which the SDK reads on its own."""
+    user = os.getenv("KAGGLE_USERNAME") or os.getenv("KAGGLE_USER")
+    key = os.getenv("KAGGLE_KEY") or os.getenv("KAGGLE_API_KEY")
+    return bool(user and key)
+
+
+def _has_config_file() -> bool:
+    return os.path.exists(os.path.expanduser("~/.kaggle/kaggle.json"))
+
+
+def credentials_source() -> str:
+    """Where the Kaggle credentials come from, for the startup banner."""
+    token, name = _find_token()
+    if token:
+        return name
+    if _has_legacy_key():
+        return "KAGGLE_USERNAME + KAGGLE_KEY"
+    if _has_config_file():
+        return "~/.kaggle/kaggle.json"
+    return ""
+
+
+NOT_CONFIGURED = (
+    "Kaggle is not configured, so kaggle_run cannot run anything. Set the "
+    "KAGGLE_API_TOKEN environment variable to your Kaggle API token (the "
+    "KGAT_... one from your account's API tokens page) and redeploy. Until "
+    "then, use the code tool for anything that does not need the network."
+)
 
 
 def _kaggle_api():
     """Get an authenticated Kaggle client, or None if it is not set up."""
-    global _api, _api_failed
+    global _api, _api_failed, _api_error
     if _api is not None:
         return _api
     if _api_failed:
         return None
-    if not (KAGGLE_API_TOKEN or os.path.exists(os.path.expanduser("~/.kaggle/kaggle.json"))):
+
+    token, name = _find_token()
+    if token:
+        # The SDK only looks at KAGGLE_API_TOKEN, so an alias the user set
+        # (KAGGLE_TOKEN, KAGGLE_ACCESS_TOKEN) is normalised into it here.
+        os.environ["KAGGLE_API_TOKEN"] = token
+    elif not (_has_legacy_key() or _has_config_file()):
+        _api_error = NOT_CONFIGURED
         _api_failed = True
         return None
+
     try:
         from kaggle.api.kaggle_api_extended import KaggleApi
 
         client = KaggleApi()
-        client.authenticate()
+        # The SDK calls exit(1) when it cannot authenticate, which would kill
+        # the whole bot. Turn that into a normal error instead.
+        try:
+            client.authenticate()
+        except SystemExit:
+            raise RuntimeError("the Kaggle API rejected the credentials")
         _api = client
+        _api_failed = False
+        _api_error = ""
     except Exception as exc:
-        print(f"could not set up the Kaggle client: {exc}")
-        _api_failed = True
+        _api_error = f"could not set up the Kaggle client: {exc}"
+        print(_api_error)
+        # Not cached as a permanent failure: the next call tries again, so a
+        # transient network problem does not disable Kaggle for the session.
         return None
     return _api
 
@@ -131,22 +196,55 @@ def _owner() -> str:
 # ---------------------------------------------------------------------------
 def _metadata(slug: str, owner: str, accelerator: str, datasets: list,
               title: str) -> dict:
-    return {
+    """The kernel-metadata.json that gets pushed.
+
+    `enable_internet` is always on: Kaggle kernels have no network access by
+    default, and every script that pulls live data needs it.
+    """
+    accelerator = (accelerator or "").strip()
+    meta = {
         "id": f"{owner}/{slug}" if owner else slug,
         "title": title,
         "code_file": "main.py",
         "language": "python",
         "kernel_type": "script",
         "is_private": True,
-        "enable_gpu": str(accelerator or "").upper().startswith("NVIDIA"),
-        "enable_tpu": str(accelerator or "").upper().startswith("TPU"),
+        "enable_gpu": accelerator.upper().startswith("NVIDIA"),
+        "enable_tpu": accelerator.upper().startswith("TPU"),
         "enable_internet": True,
-        "machine_shape": accelerator or "",
         "dataset_sources": datasets or [],
         "competition_sources": [],
         "kernel_sources": [],
         "model_sources": [],
     }
+    if accelerator:
+        meta["machine_shape"] = accelerator
+    return meta
+
+
+def _internet_is_on(client, ref: str) -> bool:
+    """Check the pushed kernel's own settings for internet access.
+
+    Reading the kernel back is the only way to be sure the flag was applied
+    - the push response does not mention it.
+    """
+    out = tempfile.mkdtemp(prefix="kaggle_meta_")
+    try:
+        client.kernels_pull(ref, path=out, metadata=True)
+        meta_path = os.path.join(out, "kernel-metadata.json")
+        with open(meta_path, encoding="utf-8") as fh:
+            return bool(json.load(fh).get("enable_internet"))
+    except Exception as exc:
+        # Not knowing is not the same as knowing it is off; do not stop a
+        # working run over a failed check.
+        print(f"could not confirm the kernel's internet setting: {exc}")
+        return True
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+
+
+# Slugs whose internet setting has already been checked.
+_internet_checked: set[str] = set()
 
 
 def _run_sync(code: str, timeout: int, accelerator: str, datasets: list,
@@ -154,7 +252,7 @@ def _run_sync(code: str, timeout: int, accelerator: str, datasets: list,
     """Push a script to Kaggle, wait for it, and collect the output."""
     client = _kaggle_api()
     if client is None:
-        return {"error": "Kaggle is not configured. Set KAGGLE_API_TOKEN."}
+        return {"error": _api_error or NOT_CONFIGURED}
 
     owner = _owner()
     slug = None
@@ -165,15 +263,24 @@ def _run_sync(code: str, timeout: int, accelerator: str, datasets: list,
         # busy, so it happens inside the try - the finally block below has to
         # cope with there being no slug.
         slug = _pool_slug()
+        meta = _metadata(slug, owner, accelerator, datasets, label or slug)
         with open(os.path.join(work, "kernel-metadata.json"), "w") as fh:
-            json.dump(_metadata(slug, owner, accelerator, datasets,
-                                label or slug), fh, indent=2)
+            json.dump(meta, fh, indent=2)
         with open(os.path.join(work, "main.py"), "w") as fh:
             fh.write(code)
 
+        ref = f"{owner}/{slug}" if owner else slug
+
         t0 = time.time()
         try:
-            response = client.kernels_push(work)
+            # Kaggle's own session limit, so a long script is not cut off
+            # before the timeout we were asked to wait for. `acc` is how the
+            # SDK wants the accelerator passed; the metadata is the fallback.
+            response = client.kernels_push(
+                work,
+                timeout=str(min(int(timeout), 43200)),
+                acc=accelerator or None,
+            )
         except Exception as exc:
             return {"error": f"could not push to Kaggle: {exc}"}
         pushed = time.time() - t0
@@ -182,7 +289,24 @@ def _run_sync(code: str, timeout: int, accelerator: str, datasets: list,
         if detail.get("error"):
             return {"error": f"Kaggle rejected the kernel: {detail['error']}"}
 
-        ref = f"{owner}/{slug}" if owner else slug
+        # Make sure the kernel really came up with internet access. If it did
+        # not, push it again with the flag forced on - a kernel that cannot
+        # reach the network is useless for anything live.
+        if slug not in _internet_checked:
+            if not _internet_is_on(client, ref):
+                print(f"the kernel {ref} came up without internet; pushing it again")
+                meta["enable_internet"] = True
+                with open(os.path.join(work, "kernel-metadata.json"), "w") as fh:
+                    json.dump(meta, fh, indent=2)
+                try:
+                    client.kernels_push(
+                        work,
+                        timeout=str(min(int(timeout), 43200)),
+                        acc=accelerator or None,
+                    )
+                except Exception as exc:
+                    print(f"could not re-push {ref} with internet enabled: {exc}")
+            _internet_checked.add(slug)
 
         # Wait for it to finish.
         deadline = time.time() + timeout

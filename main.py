@@ -293,6 +293,22 @@ async def on_ready():
     except Exception as exc:
         print(f"long-term memory: unavailable ({exc})")
 
+    # Say whether Kaggle is on. It stays off until a token reaches the
+    # process, and it says so rather than failing on every call.
+    try:
+        from kaggle_backend import available as kaggle_available
+        from kaggle_backend import credentials_source
+
+        source = credentials_source()
+        if source:
+            print(f"kaggle: {'on' if await kaggle_available() else 'UNREACHABLE'} "
+                  f"(credentials from {source})")
+        else:
+            print("kaggle: OFF - no API token found. Set KAGGLE_API_TOKEN "
+                  "to your KGAT_... token (or KAGGLE_USERNAME + KAGGLE_KEY).")
+    except Exception as exc:
+        print(f"kaggle: unavailable ({exc})")
+
     from jobs import _load_job_state, report_interrupted_jobs
     _load_job_state()
 

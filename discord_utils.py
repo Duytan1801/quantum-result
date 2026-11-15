@@ -91,10 +91,24 @@ async def send_long(target, content: str, code_block: bool = False, footer: str 
         footer_text = f"\n-# {footer}" if footer else ""
         footer_room = len(footer_text) + 4
 
+        # Join neighbouring text sections back together.
+        #
+        # process_math cuts the message apart wherever an equation was. When
+        # an equation cannot be drawn it becomes text too, so without this the
+        # answer arrives as a dozen unrelated fragments instead of one
+        # message - and, worse, a blank fragment in between, which Discord
+        # rejects outright.
+        merged = []
+        for kind, value in parts:
+            if kind == "text" and merged and merged[-1][0] == "text":
+                merged[-1] = ("text", merged[-1][1] + value)
+            else:
+                merged.append((kind, value))
+
         # Split each text section into Discord-sized chunks, keeping images in
         # place between the sections they came from.
         outgoing = []
-        for kind, value in parts:
+        for kind, value in merged:
             if kind == "image":
                 outgoing.append(("image", value))
                 continue
@@ -121,10 +135,28 @@ async def send_long(target, content: str, code_block: bool = False, footer: str 
                 except Exception as exc:
                     await _send(target, f"⚠️ Could not attach {os.path.basename(value)}: {exc}")
                 continue
-            if first and hasattr(target, "reply"):
-                await target.reply(value)
-            else:
-                await _send(target, value)
+
+            # Discord rejects a message with no visible content:
+            #   HTTP 400 {"message": "Cannot send an empty message"}
+            # A blank chunk used to raise out of this function, which threw
+            # away every remaining part of the answer - so a reply stopped
+            # halfway, with no footer and no explanation.
+            if not (value or "").strip():
+                continue
+
+            try:
+                if first and hasattr(target, "reply"):
+                    await target.reply(value)
+                else:
+                    await _send(target, value)
+            except Exception as exc:
+                # One message that Discord will not accept must not cost the
+                # user the rest of the answer.
+                print(f"could not send a message part: {exc}")
+                try:
+                    await _send(target, f"⚠️ A part of this reply failed to send: {exc}")
+                except Exception:
+                    pass
             first = False
     finally:
         if render_dir:
