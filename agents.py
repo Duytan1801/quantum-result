@@ -15,11 +15,13 @@ def _tool_subset(*names: str) -> list:
 
 
 RESEARCH_TOOLS = ("web_search", "read_file", "write_file", "edit_file", "code",
-                  "wolfram_alpha", "verify_claims", "draw_diagram")
+                  "wolfram_alpha", "verify_claims", "draw_diagram",
+                  "kaggle_run", "kaggle_datasets")
 ANALYZE_TOOLS = ("code", "wolfram_alpha", "web_search", "read_file", "write_file",
-                 "edit_file", "verify_claims", "draw_diagram")
+                 "edit_file", "verify_claims", "draw_diagram", "kaggle_run",
+                 "kaggle_datasets")
 CODE_TOOLS = ("code", "read_file", "write_file", "edit_file", "web_search",
-              "draw_diagram")
+              "draw_diagram", "kaggle_run")
 EXPLORE_TOOLS = ("web_search", "read_file", "code", "wolfram_alpha", "draw_diagram")
 
 AGENTS: dict[str, dict] = {

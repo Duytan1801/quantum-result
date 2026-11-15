@@ -40,6 +40,24 @@ LANGSEARCH_API_KEY = os.getenv("LANGSEARCH_API_KEY")
 WOLFRAM_APP_ID = os.getenv("WOLFRAM_APP_ID")
 WOLFRAM_API_URL = "https://api.wolframalpha.com/v2/query"
 
+# Kaggle. Either the new API token (KGAT_...) or the legacy
+# ~/.kaggle/kaggle.json file. Kaggle provides free CPU, GPU and TPU compute
+# plus datasets and trained models; see kaggle.py for what it can and cannot
+# do.
+KAGGLE_API_TOKEN = os.getenv("KAGGLE_API_TOKEN")
+KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
+KAGGLE_KEY = os.getenv("KAGGLE_KEY")
+
+# Which backend the plain `code` tool uses.
+#
+#   daytona  (default) a fast sandbox: ~0.3s per call, but a bare environment.
+#   kaggle   free cloud compute with numpy/pandas/torch and a GPU option, but
+#            ~21s per call because every run is a fresh Kaggle session.
+#
+# `both` leaves the choice to the model, which is usually what you want: the
+# sandbox for snippets, Kaggle for heavy work.
+CODE_BACKEND = os.getenv("CODE_BACKEND", "both").strip().lower()
+
 # --- Database -------------------------------------------------------------
 _supabase_url = os.getenv("SUPABASE_URL")
 _supabase_key = os.getenv("SUPABASE_KEY")

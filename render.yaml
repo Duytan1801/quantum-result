@@ -38,3 +38,5 @@ services:
         sync: false
       - key: EMBED_MODEL
         value: nvidia/nemotron-3.5-embed-1b
+      - key: KAGGLE_API_TOKEN
+        sync: false

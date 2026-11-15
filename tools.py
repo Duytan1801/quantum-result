@@ -461,9 +461,13 @@ TOOLS = [
         "function": {
             "name": "code",
             "description": (
-                "Execute code in a sandbox. Use for data processing, string/file work, or "
-                "algorithms. For pure math and symbolic computation, use the wolfram_alpha "
-                "tool instead."
+                "Execute code in a fast sandbox (well under a second). Use for "
+                "data processing, string/file work, or algorithms on data you "
+                "already have. For pure math and symbolic computation, use the "
+                "wolfram_alpha tool instead. For heavy work - training a "
+                "model, or fitting something over a real dataset - use "
+                "kaggle_run instead: it is slower but has numpy, pandas, "
+                "PyTorch and a GPU."
             ),
             "parameters": {
                 "type": "object",
@@ -472,6 +476,100 @@ TOOLS = [
                     "language": {"type": "string", "description": "Programming language (python, javascript, bash)", "default": "python"},
                 },
                 "required": ["code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "kaggle_run",
+            "description": (
+                "Run a Python script on Kaggle's free cloud compute. Use this for "
+                "the heavy work the quick sandbox is not for: training a model, "
+                "fitting something over a real dataset, or anything that needs a "
+                "GPU, PyTorch, scikit-learn, or a Kaggle dataset mounted for you.\n"
+                "numpy, pandas, scikit-learn, torch and friends are already "
+                "installed, and the script runs with internet access.\n"
+                "IMPORTANT: this takes about 20-30 seconds per run, so prefer the "
+                "code tool for quick snippets and use this one when the job is "
+                "genuinely heavy. The script's stdout is returned, along with "
+                "any files it wrote."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "The complete Python script to run.",
+                    },
+                    "datasets": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Kaggle dataset refs to mount, e.g. "
+                            "['titanic', 'user/dataset-slug']. They appear at "
+                            "/kaggle/input/<ref>/."
+                        ),
+                    },
+                    "accelerator": {
+                        "type": "string",
+                        "description": (
+                            "Empty for CPU (free and unlimited). 'NvidiaTeslaT4' "
+                            "or 'NvidiaH100' for a GPU, 'TpuV5E8' for a TPU. GPU "
+                            "and TPU time come out of a weekly quota."
+                        ),
+                        "default": "",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Seconds to wait for the script (default 600).",
+                        "default": 600,
+                    },
+                },
+                "required": ["code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "kaggle_datasets",
+            "description": (
+                "Search Kaggle's public datasets - thousands of curated, "
+                "ready-to-use data sets that are free to download. Use it to "
+                "find real data to work with instead of inventing it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "search": {
+                        "type": "string",
+                        "description": "What to look for, e.g. 'house prices', 'covid'.",
+                    },
+                    "limit": {"type": "integer", "description": "How many to return (default 15)", "default": 15},
+                },
+                "required": ["search"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "kaggle_models",
+            "description": (
+                "Search Kaggle's trained models - ready-made models you can run "
+                "inference with, instead of training one yourself."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "search": {
+                        "type": "string",
+                        "description": "What to look for, e.g. 'sentiment', 'resnet'.",
+                    },
+                    "limit": {"type": "integer", "description": "How many to return (default 15)", "default": 15},
+                },
+                "required": ["search"],
             },
         },
     },

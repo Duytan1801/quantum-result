@@ -8,3 +8,4 @@ daytona
 matplotlib
 Excalidraw-Interface
 cairosvg
+kaggle

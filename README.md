@@ -53,6 +53,56 @@ The evaluator only allows numbers, `+ - * / // % **`, parentheses, and
 functions like `sqrt`/`log`/`abs` — no names, no attribute access, no calls
 outside a whitelist.
 
+## Two ways to run code
+
+The bot can run code in two very different places, and they are not
+interchangeable.
+
+| | Daytona sandbox | Kaggle |
+|---|---|---|
+| Speed | **0.3s** warm, 2.9s cold | **~21s, every time** |
+| Environment | a bare Python/Node/bash box | numpy, pandas, scikit-learn, scipy, PyTorch, and more |
+| Compute | CPU | CPU (free, unlimited), **GPU** (~30h/week), **TPU** (20h/week) |
+| Internet | no | yes |
+| Data | none | **Kaggle's datasets mounted for you**, plus trained models |
+| Shape | you call it, it runs, it returns | you push a script, Kaggle runs it as a batch session, you collect the logs |
+
+The 21 seconds is not a tuning problem: Kaggle has no warm session to reuse,
+so every run is a fresh batch job on shared workers. That is why the sandbox
+is still the default for the `code` tool and Kaggle is the heavy-duty option.
+
+### The Kaggle tools
+
+| Tool | What it does |
+|---|---|
+| `kaggle_run` | Runs a whole Python script on Kaggle's compute. Mounts any Kaggle datasets you name, optionally on a GPU or TPU, and returns the script's stdout and the files it wrote. |
+| `kaggle_datasets` | Searches Kaggle's public datasets - thousands of curated, free, ready-to-use data sets. |
+| `kaggle_models` | Searches Kaggle's trained models, so you can run inference instead of training something. |
+
+```python
+kaggle_run({
+  "code": "import pandas as pd\ndf = pd.read_csv('/kaggle/input/titanic/train.csv')\nprint(df.shape)",
+  "datasets": ["heptapod/titanic"],
+  "accelerator": ""
+})
+```
+
+Datasets are mounted at `/kaggle/input/<ref>/`.
+
+### Choosing the backend
+
+`CODE_BACKEND` decides what the plain `code` tool does:
+
+- `both` (the default) - the model chooses per call, which is usually what you
+  want: the sandbox for snippets, Kaggle for real work;
+- `daytona` - always the sandbox, at ~0.3s a call;
+- `kaggle` - always Kaggle, at ~21s a call, but with the full data-science
+  environment and a GPU.
+
+Setup: put a Kaggle API token (the new `KGAT_...` kind) in `KAGGLE_API_TOKEN`,
+or the legacy `~/.kaggle/kaggle.json`. The account needs a verified phone
+number before GPU access works.
+
 ## Diagrams
 
 The bot can draw flowcharts, architecture sketches and concept maps, and send
@@ -121,9 +171,21 @@ Unicode text so a message never turns into an image dump.
 Fenced code blocks are never touched — Python source containing `$` or
 `\frac` is left exactly as written.
 
-Requires Node.js plus `katex` and `mathjax-full` (see `render/`). If those
-are missing the bot falls back to matplotlib's `mathtext`, which handles simple
-expressions but not multi-line environments.
+Requires Node.js plus `katex` and `mathjax-full` (see `render/`).
+
+If those are missing the bot falls back to matplotlib's `mathtext`, which
+handles simple expressions only. Its failure mode is silent — it accepts
+commands it cannot typeset and draws the LaTeX *source* instead, so the
+fallback refuses anything it cannot do properly:
+
+- an environment (`\begin{aligned}`) — drawn as source;
+- a newline in the expression — the whole expression is drawn as source;
+- a `$` inside the expression — the `$$…$$` wrapper stops being maths;
+- anything else mathtext rejects.
+
+Those become readable Unicode text instead of a picture of code. The bot
+prints `math renderer: KaTeX + MathJax` or `math renderer: matplotlib
+fallback` when it starts, so it is always obvious which one is in use.
 
 ## Vision
 
@@ -212,6 +274,19 @@ than the 8B model, whose batch p90 was 30 seconds. Override with
   remembers.
 - Query embeddings are cached, so asking the same question twice only pays
   for the embedding once.
+
+**Checking it works.** `verify_memory.py` does the whole round trip against
+the live database — it checks the schema, stores a test memory, finds it again
+by meaning (the query shares no words with it), confirms an unrelated question
+does *not* match it, and cleans up:
+
+```bash
+python verify_memory.py
+```
+
+To see what the bot has remembered, look at the table in the Supabase
+dashboard, or check the usage counters — `use_count` shows how many times a
+memory has been retrieved, and `last_used_at` when it was last needed.
 
 **One-time setup.** The memories table and its search function must exist
 before memory works. Run [`supabase_memory.sql`](supabase_memory.sql) in the
@@ -315,6 +390,7 @@ answered directly without starting a job.
 | `diagrams.py` | Node/edge spec → Excalidraw sketch, with grid layout |
 | `excalidraw_render.py` | Excalidraw JSON → PNG |
 | `supabase_memory.sql` | Creates the `memories` table and its search function |
+| `verify_memory.py` | Checks that long-term memory is working, end to end |
 | `requirements.txt` | Python dependencies |
 | `.env.example` | Copy to `.env` and add your keys |
 | `render.yaml` | Render service definition (optional) |
@@ -356,6 +432,8 @@ answered directly without starting a job.
 | `EMBED_MODEL` | no | Embedding model for semantic memory — defaults to `nvidia/nemotron-3.5-embed-1b` |
 | `MEMORY_MIN_SCORE` | no | Relevance floor for memory retrieval — defaults to `0.15` |
 | `NODE_BINARY` | no | Path to `node` if it is not on `PATH` (needed for math rendering) |
+| `KAGGLE_API_TOKEN` | no | Kaggle API token — enables the Kaggle compute and dataset tools |
+| `CODE_BACKEND` | no | Which backend the `code` tool uses: `daytona`, `kaggle` or `both` (default) |
 
 \* At least one of `NVIDIA_API_KEY` or `GROQ_API_KEY` must be set. If both are
 present, NVIDIA is used first and Groq takes over if NVIDIA errors.

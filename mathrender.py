@@ -209,8 +209,11 @@ def latex_to_unicode(latex: str) -> str:
 
             # Spacing and sizing commands
             if name in ("left", "right", "displaystyle", "limits", "big", "Big",
-                        "bigg", "Bigg", "quad", "qquad", "thinspace",
-                        "lbrace", "rbrace"):
+                        "bigg", "Bigg", "bigl", "Bigl", "bigr", "Bigr",
+                        "quad", "qquad", "thinspace", "thickspace",
+                        "medspace", "negthinspace", "mspace",
+                        "lbrace", "rbrace", "substack", "stackrel",
+                        "underset", "overset", "not"):
                 if name in ("lbrace", "rbrace"):
                     out.append({"lbrace": "{", "rbrace": "}"}[name])
                 continue
@@ -223,7 +226,7 @@ def latex_to_unicode(latex: str) -> str:
                 continue
 
             # Bare spacing macros: \, \; \: \!
-            if name == "" and i < n and latex[i] in ",;! ":
+            if name == "" and i < n and latex[i] in ",;! :":
                 out.append(" ")
                 i += 1
                 continue
@@ -279,12 +282,25 @@ def render_latex_png(latex: str, path: str, fontsize: int = 22,
     """Render a LaTeX expression to a PNG. Returns True on success.
 
     This is the fallback used when the KaTeX + MathJax renderer is not
-    available. matplotlib's mathtext accepts environments like
-    \\begin{aligned} without complaint but draws the LaTeX *source* instead of
-    typesetting it, so an environment is rejected here and the caller falls
-    back to readable Unicode text.
+    available. matplotlib's mathtext is a small subset of LaTeX and its
+    failure mode is silent, so anything it cannot typeset is rejected here
+    and the caller falls back to readable Unicode text:
+
+      * an environment (\\begin{aligned}) - mathtext accepts it without
+        complaint but draws the LaTeX *source* instead of typesetting it;
+      * a newline - mathtext gives up on the whole expression and draws the
+        source, including the $ delimiters, as ordinary text;
+      * a $ inside the expression - the $$...$$ wrapper would then have an
+        odd number of dollars, so matplotlib stops treating it as maths and
+        draws it literally.
+
+    A picture of LaTeX source is worse than no picture at all.
     """
     if "\\begin{" in latex:
+        return False
+    if "\n" in latex or "\r" in latex:
+        return False
+    if "$" in latex:
         return False
 
     try:

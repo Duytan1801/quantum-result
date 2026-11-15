@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 
+import config
 from config import (
     HISTORY_ROWS,
     MAX_AGENT_STEPS,
@@ -104,6 +105,18 @@ def build_system_prompt(user_facts: dict) -> str:
         "Use the web_search tool for current information, news, facts, or anything not in your training data. "
         "Use the read_file, write_file, and edit_file tools to read, write, and edit files in the workspace. Only call tools when necessary. Once you have gathered enough information to answer the user, provide the final answer directly without calling more tools. Do not call the same tool repeatedly - if one search or execution doesn\t give useful results, answer with what you have or try a different approach. "
         "Files are stored in a sandboxed workspace directory."
+        "\n\n"
+        "Two ways to run code, and they are not interchangeable:\n"
+        "- The code tool runs in a fast sandbox (well under a second). Use it for "
+        "short snippets, quick calculations on data you already have, string and "
+        "file work, and anything where you need the result to carry on.\n"
+        "- The kaggle_run tool runs a whole script on Kaggle's free cloud "
+        "compute, with numpy, pandas, scikit-learn and PyTorch installed, a GPU "
+        "or TPU if you ask for one, and Kaggle datasets mounted for you. It "
+        "takes about 20-30 seconds, so use it only for genuinely heavy work: "
+        "training a model, fitting something over a real dataset, or a script "
+        "that would be too slow or too big for the sandbox. Use kaggle_datasets "
+        "to find real data to work with.\n"
         "\n\n"
         "When to delegate to a background agent:\n"
         "- You have specialist agents available. When a request needs more than a "
@@ -218,7 +231,56 @@ async def _run_tool(name: str, args: dict, channel=None, user_id=None) -> str:
     if name == "wolfram_alpha":
         return await wolfram_alpha(args.get("query", ""))
     if name == "code":
-        return await run_code_in_sandbox(args.get("code", ""), args.get("language", "python"))
+        code = args.get("code", "")
+        language = args.get("language", "python")
+        # CODE_BACKEND decides whether the plain code tool goes to the fast
+        # sandbox or to Kaggle's cloud compute.
+        backend = getattr(config, "CODE_BACKEND", "both")
+        if backend == "kaggle" and language == "python":
+            import kaggle_backend
+
+            result = await kaggle_backend.run_code(code, timeout=600)
+            return kaggle_backend.format_output(result)
+        return await run_code_in_sandbox(code, language)
+    if name == "kaggle_run":
+        import kaggle_backend
+
+        result = await kaggle_backend.run_code(
+            args.get("code", ""),
+            timeout=int(args.get("timeout") or 600),
+            accelerator=args.get("accelerator") or "",
+            datasets=args.get("datasets") or [],
+        )
+        text = kaggle_backend.format_output(result)
+        # A script that wrote files gets them attached to the reply.
+        for f in result.get("files") or []:
+            path = f.get("path")
+            if path and os.path.exists(path) and not path.endswith(".log"):
+                try:
+                    tracker = written_files.get()
+                    if tracker is not None:
+                        tracker.append(path)
+                except Exception:
+                    pass
+        return text
+    if name == "kaggle_datasets":
+        import kaggle_backend
+
+        items = await kaggle_backend.list_datasets(args.get("query") or args.get("search") or "",
+                                                    int(args.get("limit") or 15))
+        if not items:
+            return "No datasets found."
+        lines = [f"- {d['ref']} ({d['size']} bytes) - {d['title']}" for d in items]
+        return "Kaggle datasets:\n" + "\n".join(lines)
+    if name == "kaggle_models":
+        import kaggle_backend
+
+        items = await kaggle_backend.list_models(args.get("query") or args.get("search") or "",
+                                                  int(args.get("limit") or 15))
+        if not items:
+            return "No models found."
+        lines = [f"- {m['ref']} - {m['title']}" for m in items]
+        return "Kaggle models:\n" + "\n".join(lines)
     if name == "web_search":
         return await web_search(
             args.get("query", ""),
