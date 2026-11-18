@@ -160,11 +160,12 @@ def _hint_from_status(report: dict) -> str:
     )
 
 
-def status_hint(force: bool = False) -> str:
+def status_hint(force: bool = False, report: dict = None) -> str:
     """One line for the system prompt: can Kaggle be used right now?
 
     A stale value is still returned (and refreshed in the background) so the
-    prompt is never delayed by a network round trip.
+    prompt is never delayed by a network round trip. A pre-computed status
+    report can be passed in to avoid a second live check.
     """
     with _hint_lock:
         age = time.monotonic() - _hint_cache["ts"]
@@ -176,7 +177,7 @@ def status_hint(force: bool = False) -> str:
                              daemon=True).start()
         return cached
 
-    report = kaggle_status()
+    report = report or kaggle_status()
     hint = _hint_from_status(report)
     with _hint_lock:
         _hint_cache["ts"] = time.monotonic()

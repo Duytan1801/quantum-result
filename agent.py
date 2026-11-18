@@ -23,7 +23,10 @@ from storage import db_add_message, db_get_history, db_get_user_facts
 from tools import (
     draw_diagram,
     edit_file,
+    paper_details,
     read_file,
+    read_pdf,
+    search_papers,
     verify_claims,
     web_search,
     wolfram_alpha,
@@ -37,6 +40,9 @@ STATUS_LABELS = {
     "code": "💻 Running code...",
     "wolfram_alpha": "🧮 Computing...",
     "web_search": "🔍 Searching the web...",
+    "search_papers": "📚 Searching academic papers...",
+    "paper_details": "📚 Looking up the paper...",
+    "read_pdf": "📄 Reading the PDF...",
     "read_file": "📖 Reading file...",
     "write_file": "📝 Writing file...",
     "edit_file": "✏️ Editing file...",
@@ -135,6 +141,16 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "") -> str:
         "to find real data to work with.\n"
         + kaggle_status_text
         + "\n\n"
+        "For academic work:\n"
+        "- search_papers searches Google Scholar and returns papers with their "
+        "authors, venue, year and citation counts. Use it instead of web_search "
+        "when the answer is in the literature.\n"
+        "- paper_details gives the full record of one paper, including its "
+        "abstract and a BibTeX citation.\n"
+        "- read_pdf extracts the text of a PDF from a URL or a workspace file, "
+        "page by page, so you can read the paper itself and cite the page you "
+        "read it on.\n"
+        "\n\n"
         "When to delegate to a background agent:\n"
         "- You have specialist agents available. When a request needs more than a "
         "couple of steps, pick the agent that fits and call start_agent_task with "
@@ -306,6 +322,20 @@ async def _run_tool(name: str, args: dict, channel=None, user_id=None) -> str:
         )
     if name == "read_file":
         return await read_file(args.get("file_path", ""))
+    if name == "search_papers":
+        return await search_papers(
+            args.get("query", ""),
+            int(args.get("limit") or 5),
+            int(args.get("year") or 0),
+        )
+    if name == "paper_details":
+        return await paper_details(args.get("title", ""))
+    if name == "read_pdf":
+        return await read_pdf(
+            args.get("source", ""),
+            args.get("pages", "") or "",
+            int(args.get("max_chars") or 60000),
+        )
     if name == "write_file":
         return await write_file(args.get("file_path", ""), args.get("content", ""))
     if name == "edit_file":

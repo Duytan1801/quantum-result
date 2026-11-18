@@ -153,9 +153,34 @@ async def _run_job(job_id: str, channel, user_id: str, topic: str, agent_name: s
             pass
 
     try:
+        system_prompt = spec["prompt"] + f"\n\nThe task: {topic}"
+
+        # A delegated agent can call kaggle_run too, so it gets the live
+        # status as well. Without it, an agent that was told to use Kaggle
+        # may refuse on the strength of an old remembered failure.
+        has_kaggle = any(
+            t.get("function", {}).get("name", "").startswith("kaggle")
+            for t in spec.get("tools", [])
+        )
+        if has_kaggle:
+            try:
+                import kaggle_backend
+
+                hint = await asyncio.to_thread(kaggle_backend.status_hint)
+                if hint:
+                    system_prompt += (
+                        "\n\nLive check of Kaggle just now: " + hint +
+                        " This status is current and authoritative: if it says "
+                        "Kaggle is working, use kaggle_run for heavy compute, "
+                        "and do not refuse it because of an older remembered "
+                        "note about failed runs."
+                    )
+            except Exception as exc:
+                print(f"kaggle status check failed: {exc}")
+
         messages = [{
             "role": "system",
-            "content": spec["prompt"] + f"\n\nThe task: {topic}",
+            "content": system_prompt,
         }]
 
         result = await run_agent_loop(

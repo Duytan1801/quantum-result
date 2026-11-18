@@ -318,9 +318,12 @@ async def on_ready():
     # from and whether a live authentication worked, so you can tell at a
     # glance whether the token reached the process.
     try:
-        from kaggle_backend import credentials_source, kaggle_status
+        from kaggle_backend import credentials_source, kaggle_status, status_hint
 
         status = kaggle_status()
+        # Warm the status cache here, so the first message after a deploy
+        # does not have to wait for a live Kaggle check.
+        status_hint(report=status)
         if status["authenticated"]:
             print(f"kaggle: on (credentials from {status['credentials_source']})")
         else:

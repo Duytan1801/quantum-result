@@ -427,6 +427,59 @@ VALID_COLORS = (
     "gray", "brown", "black",
 )
 
+# ---------------------------------------------------------------------------
+# Academic papers and PDFs
+# ---------------------------------------------------------------------------
+async def search_papers(query: str, limit: int = 5, year: int = 0) -> str:
+    """Search academic literature (Google Scholar via scholarly)."""
+    from papers import search_scholar
+
+    return await search_scholar(query, limit=limit, year=year)
+
+
+async def paper_details(title: str) -> str:
+    """Look one paper up by title and return its full record."""
+    from papers import paper_details as _details
+
+    return await _details(title)
+
+
+async def read_pdf(source: str, pages: str = "", max_chars: int = 60000) -> str:
+    """Read a PDF from the workspace or from a URL and extract its text."""
+    from pdf_reader import extract_pdf_text, fetch_pdf
+
+    source = (source or "").strip()
+    if not source:
+        return "Error: no PDF source given."
+
+    if source.startswith(("http://", "https://")):
+        data, err = await fetch_pdf(source)
+        if err:
+            return f"Error downloading the PDF: {err}"
+    else:
+        try:
+            path = safe_path(source)
+        except ValueError as exc:
+            return (f"{exc}. Use a path inside the workspace or an http(s) "
+                    f"URL for the PDF.")
+        if not os.path.exists(path):
+            return f"Error: File not found: {source}"
+        if not path.lower().endswith(".pdf"):
+            return f"Error: {source} is not a PDF file."
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except Exception as exc:
+            return f"Error reading the PDF: {exc}"
+
+    try:
+        max_chars = max(1000, min(int(max_chars or 60000), 200000))
+    except Exception:
+        max_chars = 60000
+
+    return extract_pdf_text(data, pages=pages, max_chars=max_chars)
+
+
 TOOLS = [
     {
         "type": "function",
@@ -605,6 +658,73 @@ TOOLS = [
                     "file_path": {"type": "string", "description": "Path to the file to read (relative to workspace)"},
                 },
                 "required": ["file_path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_papers",
+            "description": (
+                "Search academic literature (Google Scholar via scholarly). Use this "
+                "for finding peer-reviewed papers, preprints, journal articles and "
+                "their citation counts - anything a plain web search would answer "
+                "with blog posts instead. Returns title, authors, year, venue, "
+                "citation count, abstract and a link for each hit."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "What to search for, e.g. 'sparse attention transformer' "
+                            "or 'CRISPR base editing efficiency'."
+                        ),
+                    },
+                    "limit": {"type": "integer", "description": "Number of papers to return (default 5, max 15)", "default": 5},
+                    "year": {"type": "integer", "description": "Only papers published in this year (0 = any)", "default": 0},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "paper_details",
+            "description": (
+                "Look up one paper by title and get its full record: abstract, "
+                "authors, venue, year, citation count, DOI and a BibTeX citation. "
+                "Use after search_papers when you need the details of a specific hit."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "The exact title of the paper"},
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_pdf",
+            "description": (
+                "Read a PDF and extract its text with PyMuPDF. Use it for papers, "
+                "reports and any document you have a link or a workspace file for. "
+                "The text comes back page by page, so you can cite the page you "
+                "read something on."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "description": "Workspace path or http(s) URL of the PDF"},
+                    "pages": {"type": "string", "description": "Pages to read, e.g. '1-3,7' (default: the whole document)"},
+                    "max_chars": {"type": "integer", "description": "Maximum characters to return (default 60000)", "default": 60000},
+                },
+                "required": ["source"],
             },
         },
     },

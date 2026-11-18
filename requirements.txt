@@ -14,3 +14,9 @@ kaggle
 # through and every later attempt fails with a misleading "partially
 # initialized module" error.
 six
+# Academic literature search (Google Scholar) and PDF text extraction.
+scholarly
+# scholarly 1.7 imports `bibtexparser.bibdatabase`, which bibtexparser 2.x
+# renamed. Without this pin the import fails and every paper search dies.
+bibtexparser<2
+pymupdf
