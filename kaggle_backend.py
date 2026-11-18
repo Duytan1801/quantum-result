@@ -84,6 +84,16 @@ def credentials_source() -> str:
     return ""
 
 
+# The system prompt carries a one-line statement about whether Kaggle works
+# right now. Checking auth live costs a round trip to Kaggle and a slow SDK
+# import, so the hint is cached: a fresh value is returned directly, a stale
+# one is returned immediately and refreshed in a background thread, and only
+# the very first call (before any value exists) waits for the network.
+_HINT_TTL = 600.0
+_hint_lock = threading.Lock()
+_hint_cache = {"ts": 0.0, "text": None}
+
+
 def force_refresh() -> None:
     """Clear any cached failure state so the next call retries from scratch.
 
@@ -95,6 +105,9 @@ def force_refresh() -> None:
     _api_failed = False
     _api_error = ""
     _clear_failed_kaggle_imports()
+    with _hint_lock:
+        _hint_cache["ts"] = 0.0
+        _hint_cache["text"] = None
 
 
 def kaggle_status() -> dict:
@@ -128,6 +141,47 @@ def kaggle_status() -> dict:
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
     return report
+
+
+def _hint_from_status(report: dict) -> str:
+    """Turn a kaggle_status() report into one prompt-sized line."""
+    if report.get("authenticated"):
+        source = report.get("credentials_source") or "unknown source"
+        return (
+            f"Kaggle is configured and working - live authentication succeeded "
+            f"(credentials from {source}), so kaggle_run and kaggle_datasets "
+            f"are available for heavy compute."
+        )
+    error = report.get("error") or "unknown error"
+    return (
+        f"Kaggle is currently NOT working ({error}). If kaggle_run is needed, "
+        f"try it once and report the actual error, and fall back to the code "
+        f"tool for anything that does not need the network."
+    )
+
+
+def status_hint(force: bool = False) -> str:
+    """One line for the system prompt: can Kaggle be used right now?
+
+    A stale value is still returned (and refreshed in the background) so the
+    prompt is never delayed by a network round trip.
+    """
+    with _hint_lock:
+        age = time.monotonic() - _hint_cache["ts"]
+        cached = _hint_cache["text"]
+
+    if cached is not None and (age < _HINT_TTL or not force):
+        if age >= _HINT_TTL:
+            threading.Thread(target=status_hint, kwargs={"force": True},
+                             daemon=True).start()
+        return cached
+
+    report = kaggle_status()
+    hint = _hint_from_status(report)
+    with _hint_lock:
+        _hint_cache["ts"] = time.monotonic()
+        _hint_cache["text"] = hint
+    return hint
 
 
 

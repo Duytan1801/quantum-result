@@ -87,12 +87,27 @@ FRESHNESS_REMINDER = (
 )
 
 
-def build_system_prompt(user_facts: dict) -> str:
-    """Build the system prompt, including any remembered facts."""
+def build_system_prompt(user_facts: dict, kaggle_hint: str = "") -> str:
+    """Build the system prompt, including any remembered facts.
+
+    `kaggle_hint` is the live status of the Kaggle backend, checked against
+    the real API just before the prompt is built. It is stated explicitly
+    because a remembered note about Kaggle failing once would otherwise make
+    the model refuse a tool that works.
+    """
     facts_text = ""
     if user_facts:
         facts_lines = [f"- {k}: {v}" for k, v in user_facts.items()]
         facts_text = "\n\nUser facts you should remember:\n" + "\n".join(facts_lines)
+
+    kaggle_status_text = ""
+    if kaggle_hint:
+        kaggle_status_text = (
+            "\nLive check of Kaggle just now: " + kaggle_hint +
+            " This status is current and authoritative: if it says Kaggle is "
+            "working, use kaggle_run for heavy compute, and do not refuse it "
+            "because of an older remembered note about failed runs.\n"
+        )
 
     return (
         "You are a helpful assistant with a computational engine (WolframAlpha), code "
@@ -118,7 +133,8 @@ def build_system_prompt(user_facts: dict) -> str:
         "training a model, fitting something over a real dataset, or a script "
         "that would be too slow or too big for the sandbox. Use kaggle_datasets "
         "to find real data to work with.\n"
-        "\n\n"
+        + kaggle_status_text
+        + "\n\n"
         "When to delegate to a background agent:\n"
         "- You have specialist agents available. When a request needs more than a "
         "couple of steps, pick the agent that fits and call start_agent_task with "
@@ -606,7 +622,20 @@ async def get_nvidia_response_full(user_id, user_message, channel=None, attachme
     history = await db_get_history(user_id, limit=HISTORY_ROWS)
     user_facts = await db_get_user_facts(user_id)
 
-    messages = [{"role": "system", "content": build_system_prompt(user_facts)}]
+    # The live Kaggle status goes into the prompt. The model has to know that
+    # the tool works right now, not what a remembered note says about it, so
+    # the check is made against the real API before the prompt is built.
+    kaggle_hint = ""
+    try:
+        import kaggle_backend
+
+        kaggle_hint = await asyncio.to_thread(kaggle_backend.status_hint)
+    except Exception as exc:
+        print(f"kaggle status check failed: {exc}")
+
+    messages = [
+        {"role": "system", "content": build_system_prompt(user_facts, kaggle_hint)}
+    ]
     messages.extend(history_to_messages(history))
 
     # If the user attached pictures, hand them to the vision model.

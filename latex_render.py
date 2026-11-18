@@ -13,8 +13,10 @@ mathtext so maths still renders (just less well).
 
 import json
 import os
+import platform
 import shutil
 import subprocess
+import sys
 import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -24,6 +26,10 @@ SCRIPT = os.path.join(RENDER_DIR, "render_math.js")
 # Colours that match Discord's dark theme.
 BACKGROUND = "#313338"
 FOREGROUND = "#f1f3f5"
+
+# The Node runtime fetched when none is installed. It matches the version
+# the render.yaml build command installs, so both paths agree.
+NODE_VERSION = "v20.18.0"
 
 # Where node might live.
 NODE_CANDIDATES = [
@@ -41,23 +47,122 @@ _proc = None
 _node = None
 _modules = None
 
+# One auto-install attempt per process: if nodejs.org is unreachable the bot
+# must keep answering, not stall on every message.
+_bootstrap_lock = threading.Lock()
+_node_bootstrap_done = False
+_npm_bootstrap_done = False
+
+
+def _bootstrap_node():
+    """Download a self-contained Node.js runtime when none is installed.
+
+    Render rebuilds the container on every deploy, so node installed by the
+    build command only exists when the service actually uses render.yaml.
+    Node ships as a single tarball, so it can be fetched at runtime instead -
+    and then KaTeX + MathJax work no matter how the service is configured.
+
+    Returns the path to the node binary, or None on any failure.
+    """
+    global _node_bootstrap_done
+    with _bootstrap_lock:
+        if _node_bootstrap_done:
+            return None
+        _node_bootstrap_done = True
+
+    if sys.platform != "linux" or platform.machine() not in ("x86_64", "AMD64"):
+        return None
+
+    import tarfile
+    import tempfile
+    import urllib.request
+
+    base = os.path.expanduser(os.path.join("~", ".lain2", "node"))
+    dirname = f"node-{NODE_VERSION}-linux-x64"
+    node_bin = os.path.join(base, dirname, "bin", "node")
+
+    if not os.path.exists(node_bin):
+        url = f"https://nodejs.org/dist/{NODE_VERSION}/{dirname}.tar.xz"
+        print(f"latex renderer: no node found; downloading {url} ...")
+        try:
+            with urllib.request.urlopen(url, timeout=180) as resp:
+                data = resp.read()
+            fd, tmp = tempfile.mkstemp(suffix=".tar.xz")
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            with tarfile.open(tmp, "r:xz") as tar:
+                try:
+                    tar.extractall(base, filter="data")
+                except TypeError:  # python < 3.12 has no filter argument
+                    tar.extractall(base)
+            os.remove(tmp)
+            os.chmod(node_bin, 0o755)
+        except Exception as exc:
+            print(f"latex renderer: could not auto-install node: {exc}")
+            return None
+    print(f"latex renderer: using auto-installed node at {node_bin}")
+    return node_bin
+
+
+def _npm_install():
+    """Install the renderer's npm packages if node_modules is missing."""
+    global _npm_bootstrap_done
+    with _bootstrap_lock:
+        if _npm_bootstrap_done:
+            return False
+        _npm_bootstrap_done = True
+
+    if _node is None:
+        return False
+    # The node tarball bundles npm; a system node needs npm on the PATH.
+    root = os.path.dirname(os.path.dirname(_node))
+    npm_cli = os.path.join(root, "lib", "node_modules", "npm", "bin", "npm-cli.js")
+    if os.path.exists(npm_cli):
+        cmd = [_node, npm_cli]
+    else:
+        npm = shutil.which("npm")
+        if not npm:
+            return False
+        cmd = [npm]
+    print("latex renderer: node_modules missing; running npm install ...")
+    try:
+        subprocess.run(
+            cmd + ["install", "--prefix", RENDER_DIR, "--no-audit", "--no-fund"],
+            cwd=RENDER_DIR, timeout=420, capture_output=True,
+        )
+    except Exception as exc:
+        print(f"latex renderer: npm install failed: {exc}")
+        return False
+    return os.path.isdir(os.path.join(RENDER_DIR, "node_modules", "katex"))
+
 
 def _find_node():
     global _node, _modules
-    if _node is not None:
-        return _node
-    for candidate in NODE_CANDIDATES:
-        if candidate and os.path.exists(candidate) and os.access(candidate, os.X_OK):
-            _node = candidate
-            break
+    if _node is None:
+        for candidate in NODE_CANDIDATES:
+            if candidate and os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                _node = candidate
+                break
+        if _node is None:
+            # Nothing installed: fetch a runtime so maths still renders
+            # properly on hosts where the build command never ran.
+            _node = _bootstrap_node()
     if _node is None:
         return None
     # The npm packages live next to the script (or in a parent node_modules).
-    for base in (RENDER_DIR, HERE, os.path.dirname(HERE)):
-        modules = os.path.join(base, "node_modules")
-        if os.path.isdir(os.path.join(modules, "katex")):
-            _modules = modules
-            break
+    if _modules is None:
+        bases = (RENDER_DIR, HERE, os.path.dirname(HERE))
+        for base in bases:
+            modules = os.path.join(base, "node_modules")
+            if os.path.isdir(os.path.join(modules, "katex")):
+                _modules = modules
+                break
+        if _modules is None and _npm_install():
+            for base in bases:
+                modules = os.path.join(base, "node_modules")
+                if os.path.isdir(os.path.join(modules, "katex")):
+                    _modules = modules
+                    break
     return _node
 
 

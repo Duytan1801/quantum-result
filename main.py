@@ -284,18 +284,19 @@ async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
     # Say whether the proper math renderer is in use. If Node is missing the
-    # bot falls back to matplotlib's mathtext, which cannot typeset
-    # \begin{aligned} and friends - and it does so silently, which makes it
-    # look like the renderer is broken rather than absent.
+    # bot tries to install it at runtime; if that fails too, it falls back to
+    # matplotlib's mathtext, which cannot typeset \begin{aligned} and
+    # friends - and it does so silently, which makes it look like the
+    # renderer is broken rather than absent.
     try:
         from latex_render import renderer_available
 
         if renderer_available():
             print("math renderer: KaTeX + MathJax")
         else:
-            print("math renderer: matplotlib fallback (Node or the render/ "
-                  "packages are missing - multi-line environments will not "
-                  "typeset)")
+            print("math renderer: matplotlib fallback (no node, and the "
+                  "auto-install did not succeed - multi-line environments "
+                  "will not typeset)")
     except Exception as exc:
         print(f"math renderer: unavailable ({exc})")
 

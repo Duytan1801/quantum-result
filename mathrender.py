@@ -63,6 +63,12 @@ _SYMBOLS = {
     "rightarrow": "→", "to": "→", "leftarrow": "←", "gets": "←",
     "leftrightarrow": "↔", "Rightarrow": "⇒", "Leftarrow": "⇐",
     "Leftrightarrow": "⇔", "mapsto": "↦", "implies": "⟹",
+    "longrightarrow": "⟶", "longleftarrow": "⟵",
+    "longleftrightarrow": "⟷", "Longrightarrow": "⟹",
+    "Longleftarrow": "⟸", "Longleftrightarrow": "⟺",
+    "longmapsto": "⟼", "hookrightarrow": "↪", "hookleftarrow": "↩",
+    "uparrow": "↑", "downarrow": "↓", "updownarrow": "↕",
+    "nearrow": "↗", "searrow": "↘", "swarrow": "↙", "nwarrow": "↖",
     "angle": "∠", "perp": "⊥", "parallel": "∥", "circ": "∘",
     "star": "★", "dagger": "†", "degree": "°", "prime": "′",
     "ell": "ℓ", "hbar": "ℏ", "Re": "ℜ", "Im": "ℑ",
@@ -75,6 +81,43 @@ _SYMBOLS = {
     "lbrack": "[", "rbrack": "]", "backslash": "\\",
     "lvert": "|", "rvert": "|", "lVert": "‖", "rVert": "‖",
     "vert": "|", "Vert": "‖", "|": "‖",
+    # Relations models use often that were missing before.
+    "iff": "⇔", "cong": "≅", "doteq": "≐", "triangleq": "≜",
+    "models": "⊨", "vdash": "⊢", "dashv": "⊣", "asymp": "≍",
+    "prec": "≺", "succ": "≻", "preceq": "⪯", "succeq": "⪰",
+    "lt": "<", "gt": ">",
+    "dotsc": "…", "dotsb": "…", "dotsm": "…", "dotso": "…",
+}
+
+# Accents that compose onto a letter. The value is a combining character, so
+# \dot{x} becomes "ẋ" and \tilde{A} becomes "Ã" - dropping them used to turn
+# "ẋ = Ax" into "x = Ax", which is a different (false) statement.
+_ACCENTS = {
+    "dot": "\u0307", "ddot": "\u0308", "dddot": "\u20db",
+    "tilde": "\u0303", "widetilde": "\u0303",
+    "hat": "\u0302", "widehat": "\u0302",
+    "bar": "\u0304", "check": "\u030c", "breve": "\u0306",
+    "acute": "\u0301", "grave": "\u0300",
+    "vec": "\u20d7", "mathring": "\u030a",
+}
+
+# Environments whose contents should be shown as a bracketed matrix. The
+# fallback used to drop the environment entirely, so
+# \begin{pmatrix} A & B \\ C & D \end{pmatrix} became "A B\nC D" with the
+# brackets - and the structure - gone.
+_MATRIX_ENVS = {
+    "matrix", "pmatrix", "bmatrix", "Bmatrix", "smallmatrix",
+    "vmatrix", "Vmatrix",
+    "array", "cases", "dcases", "rcases",
+}
+
+# Small fractions get their proper single glyph: \frac12 -> "½".
+_NICE_FRACTIONS = {
+    ("1", "2"): "½", ("1", "3"): "⅓", ("2", "3"): "⅔",
+    ("1", "4"): "¼", ("3", "4"): "¾",
+    ("1", "5"): "⅕", ("2", "5"): "⅖", ("3", "5"): "⅗", ("4", "5"): "⅘",
+    ("1", "6"): "⅙", ("5", "6"): "⅚",
+    ("1", "8"): "⅛", ("3", "8"): "⅜", ("5", "8"): "⅝", ("7", "8"): "⅞",
 }
 
 # Commands whose braced argument is plain text.
@@ -116,12 +159,151 @@ def _match_brace(text: str, start: int):
     return text[start + 1:], len(text)
 
 
-def _map_script(text: str, table: dict) -> str:
-    """Map characters to their super/subscript equivalents where possible."""
-    out = []
-    for ch in text:
-        out.append(table.get(ch, ch))
-    return "".join(out)
+def _script_text(value: str, table: dict, prefix: str) -> str:
+    """Typeset a super/subscript in plain text.
+
+    Unicode has super/subscript forms for digits and many lowercase letters,
+    but not for everything. When the run cannot be mapped (e.g. ``e^{At}``,
+    where there is no superscript "A"), fall back to an explicit ``^(At)``
+    instead of mapping only part of it - "eAᵗ" reads as e times A times t,
+    which is a different expression.
+    """
+    if not value:
+        return ""
+    mapped = [table.get(ch) for ch in value]
+    if all(m is not None for m in mapped):
+        return "".join(mapped)
+    if len(value) == 1:
+        # A single letter that Unicode cannot raise/lower still has to keep
+        # its position: s^\gamma must not become "sgamma" (which reads as
+        # s times gamma). Plain punctuation is fine loose: Q^* -> "Q*".
+        if value.isalpha():
+            return f"{prefix}({value})"
+        return value
+    return f"{prefix}({value.replace(' ', '')})"
+
+
+def _read_token(text: str, i: int):
+    """Read one LaTeX argument that may be written without braces.
+
+    ``\\frac12`` and ``\\frac\\pi2`` are common model output. Without this
+    they collapsed - ``\\frac12`` produced "12" instead of "1/2".
+    """
+    if i >= len(text):
+        return "", i
+    if text[i] == "{":
+        return _match_brace(text, i)
+    if text[i] == "\\":  # a command such as \pi
+        j = i + 1
+        while j < len(text) and text[j].isalpha():
+            j += 1
+        if j > i + 1:
+            return text[i:j], j
+    return text[i], i + 1
+
+
+def _read_env_body(text: str, i: int, env: str):
+    r"""Read the body of an environment that starts at i.
+
+    Returns (body, index_after_end), balancing nested environments of the
+    same name.
+    """
+    opener = f"\\begin{{{env}}}"
+    closer = f"\\end{{{env}}}"
+    depth = 1
+    pos = i
+    while pos < len(text):
+        end = text.find(closer, pos)
+        if end == -1:
+            return text[i:], len(text)
+        while True:
+            begin = text.find(opener, pos)
+            if begin != -1 and begin < end:
+                depth += 1
+                pos = begin + len(opener)
+                continue
+            break
+        depth -= 1
+        if depth == 0:
+            return text[i:end], end + len(closer)
+        pos = end + len(closer)
+    return text[i:], len(text)
+
+
+def _skip_command(text: str, i: int) -> int:
+    """Move past a backslash command (or escaped character) starting at i."""
+    j = i + 1
+    while j < len(text) and text[j].isalpha():
+        j += 1
+    return j if j > i + 1 else i + 2
+
+
+def _split_rows(text: str) -> list[str]:
+    """Split an environment body on its \\\\ row separators."""
+    parts, depth, start = [], 0, 0
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            if i + 1 < n and text[i + 1] == "\\" and depth == 0:
+                row = text[start:i]
+                i += 2
+                # \\[2mm] is a row-spacing argument, not content.
+                if i < n and text[i] == "[":
+                    close = text.find("]", i)
+                    if close != -1:
+                        i = close + 1
+                parts.append(row)
+                start = i
+                continue
+            i = _skip_command(text, i)
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        i += 1
+    parts.append(text[start:])
+    return parts
+
+
+def _split_cells(text: str) -> list[str]:
+    """Split one matrix row on its & column separators."""
+    parts, depth, start = [], 0, 0
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            i = _skip_command(text, i)
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif ch == "&" and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+        i += 1
+    parts.append(text[start:])
+    return parts
+
+
+def _matrix_to_text(env: str, body: str) -> str:
+    r"""Show a matrix environment as bracketed plain text.
+
+    \begin{pmatrix} A & B \\ C & D \end{pmatrix} becomes "[ A  B ; C  D ]",
+    which keeps the structure that used to be lost entirely.
+    """
+    lines = []
+    for row in _split_rows(body):
+        cells = [latex_to_unicode(c).strip() for c in _split_cells(row)]
+        lines.append("  ".join(c for c in cells if c))
+    joined = " ; ".join(line for line in lines if line.strip())
+    if env in ("cases", "dcases", "rcases"):
+        return "{ " + joined
+    if env in ("vmatrix", "Vmatrix"):
+        return f"| {joined} |"
+    return f"[ {joined} ]"
 
 
 def latex_to_unicode(latex: str) -> str:
@@ -139,13 +321,25 @@ def latex_to_unicode(latex: str) -> str:
         # This has to be checked before the escaped-character case below,
         # which would otherwise swallow it and leave a stray backslash.
         if ch == "\\" and latex.startswith("\\\\", i):
-            out.append("\n")
             i += 2
+            # \\[2mm] is a row-spacing argument, not content; it used to
+            # leak into the message as a literal "[2mm]".
+            if i < n and latex[i] == "[":
+                close = latex.find("]", i)
+                if close != -1:
+                    i = close + 1
+            out.append("\n")
             continue
 
         # Escaped characters
         if ch == "\\" and i + 1 < n and latex[i + 1] in "\\{}%&_#$":
             out.append(latex[i + 1])
+            i += 2
+            continue
+
+        # An empty group contributes nothing, but printing it used to leave
+        # stray "{}" behind: {}_{C}D_{\alpha} became "{}CDα".
+        if ch == "{" and i + 1 < n and latex[i + 1] == "}":
             i += 2
             continue
 
@@ -161,21 +355,35 @@ def latex_to_unicode(latex: str) -> str:
             # Environment markers: drop the name, keep the contents.
             if name in ("begin", "end"):
                 if i < n and latex[i] == "{":
-                    _env, i = _match_brace(latex, i)
+                    env, i = _match_brace(latex, i)
+                    if name == "begin" and env in _MATRIX_ENVS:
+                        if env == "array" and i < n and latex[i] == "{":
+                            _colspec, i = _match_brace(latex, i)
+                        body, i = _read_env_body(latex, i, env)
+                        out.append(_matrix_to_text(env, body))
                 continue
 
             # \frac{a}{b}, \tfrac{a}{b}, \dfrac{a}{b}
             if name in ("frac", "tfrac", "dfrac"):
-                num, i = _match_brace(latex, i) if i < n and latex[i] == "{" else ("", i)
-                den, i = _match_brace(latex, i) if i < n and latex[i] == "{" else ("", i)
+                num, i = _read_token(latex, i)
+                den, i = _read_token(latex, i)
                 num_u = latex_to_unicode(num)
                 den_u = latex_to_unicode(den)
-                if not num_u or not den_u:
+                if (num_u, den_u) in _NICE_FRACTIONS:
+                    out.append(_NICE_FRACTIONS[(num_u, den_u)])
+                elif not num_u or not den_u:
                     out.append(f"({num_u})/({den_u})" if num_u or den_u else "")
                 elif len(num_u) <= 1 and len(den_u) <= 1:
                     out.append(f"{num_u}/{den_u}")
                 else:
                     out.append(f"({num_u})/({den_u})")
+                continue
+
+            # \binom{n}{k} - there is no Unicode binomial, so name it.
+            if name in ("binom", "tbinom", "dbinom"):
+                top, i = _read_token(latex, i)
+                bottom, i = _read_token(latex, i)
+                out.append(f"C({latex_to_unicode(top)}, {latex_to_unicode(bottom)})")
                 continue
 
             # \sqrt{x} or \sqrt[n]{x}
@@ -185,7 +393,7 @@ def latex_to_unicode(latex: str) -> str:
                     close = latex.find("]", i)
                     root = latex[i + 1:close]
                     i = close + 1
-                arg, i = _match_brace(latex, i) if i < n and latex[i] == "{" else ("", i)
+                arg, i = _read_token(latex, i)
                 arg_u = latex_to_unicode(arg)
                 prefix = f"√[{root}]" if root else "√"
                 out.append(f"{prefix}({arg_u})" if len(arg_u) > 1 else f"{prefix}{arg_u}")
@@ -207,13 +415,48 @@ def latex_to_unicode(latex: str) -> str:
                 out.append(arg.replace("\\ ", " "))
                 continue
 
-            # Spacing and sizing commands
+            # Accents: keep the letter underneath. \dot{x} -> ẋ. Dropping the
+            # accent used to corrupt the mathematics ("ẋ = Ax" -> "x = Ax").
+            if name in _ACCENTS:
+                arg, i = _match_brace(latex, i) if i < n and latex[i] == "{" else ("", i)
+                arg_u = latex_to_unicode(arg)
+                if name == "overline":
+                    out.append("".join(c + "\u0305" for c in arg_u))
+                elif arg_u:
+                    out.append(arg_u + _ACCENTS[name])
+                continue
+
+            # Arrows with a label above them. \xrightarrow{d} used to lose
+            # the arrow and leave a bare "d": "Zₙ d N(0,1)".
+            if name in ("xrightarrow", "xleftarrow"):
+                label, i = _read_group(latex, i)
+                arrow = "←" if name == "xleftarrow" else "→"
+                label_u = _script_text(latex_to_unicode(label), _SUPERSCRIPTS, "^")
+                out.append(f"{arrow}{label_u}")
+                continue
+
+            if name in ("stackrel", "overset", "underset"):
+                first, i = _read_group(latex, i)
+                base, i = _read_group(latex, i)
+                if name == "underset":
+                    out.append(latex_to_unicode(base)
+                               + _script_text(latex_to_unicode(first), _SUBSCRIPTS, "_"))
+                else:
+                    out.append(latex_to_unicode(base)
+                               + _script_text(latex_to_unicode(first), _SUPERSCRIPTS, "^"))
+                continue
+
+            # Horizontal space. \quad used to vanish entirely, joining its
+            # neighbours into one word.
+            if name in ("quad", "qquad", "thickspace", "medspace"):
+                out.append(" ")
+                continue
+
+            # Spacing and sizing commands that contribute nothing.
             if name in ("left", "right", "displaystyle", "limits", "big", "Big",
                         "bigg", "Bigg", "bigl", "Bigl", "bigr", "Bigr",
-                        "quad", "qquad", "thinspace", "thickspace",
-                        "medspace", "negthinspace", "mspace",
-                        "lbrace", "rbrace", "substack", "stackrel",
-                        "underset", "overset", "not"):
+                        "thinspace", "negthinspace", "mspace",
+                        "lbrace", "rbrace", "substack", "not"):
                 if name in ("lbrace", "rbrace"):
                     out.append({"lbrace": "{", "rbrace": "}"}[name])
                 continue
@@ -225,9 +468,10 @@ def latex_to_unicode(latex: str) -> str:
                 out.append(latex_to_unicode(arg))
                 continue
 
-            # Bare spacing macros: \, \; \: \!
+            # Bare spacing macros: \, \; \: \! \{space}
             if name == "" and i < n and latex[i] in ",;! :":
-                out.append(" ")
+                if latex[i] != "!":
+                    out.append(" ")
                 i += 1
                 continue
 
@@ -240,13 +484,13 @@ def latex_to_unicode(latex: str) -> str:
         # Superscript
         if ch == "^":
             arg, i = _read_group(latex, i + 1)
-            out.append(_map_script(latex_to_unicode(arg), _SUPERSCRIPTS))
+            out.append(_script_text(latex_to_unicode(arg), _SUPERSCRIPTS, "^"))
             continue
 
         # Subscript
         if ch == "_":
             arg, i = _read_group(latex, i + 1)
-            out.append(_map_script(latex_to_unicode(arg), _SUBSCRIPTS))
+            out.append(_script_text(latex_to_unicode(arg), _SUBSCRIPTS, "_"))
             continue
 
         # Alignment marker
@@ -257,15 +501,29 @@ def latex_to_unicode(latex: str) -> str:
         out.append(ch)
         i += 1
 
-    return "".join(out)
+    # Compose accents into their precomposed forms where one exists, so
+    # x + combining dot shows as ẋ.
+    import unicodedata
+
+    return unicodedata.normalize("NFC", "".join(out))
 
 
 def _read_group(text: str, i: int):
-    """Read a group starting at i: either {...} or a single character."""
+    """Read a group starting at i: {...}, a command, or a single character.
+
+    ``s^\\gamma`` used to read only the backslash as the group and emit the
+    rest - "gamma" - as ordinary text: "sgamma".
+    """
     if i >= len(text):
         return "", i
     if text[i] == "{":
         return _match_brace(text, i)
+    if text[i] == "\\":
+        j = i + 1
+        while j < len(text) and text[j].isalpha():
+            j += 1
+        if j > i + 1:
+            return text[i:j], j
     return text[i], i + 1
 
 

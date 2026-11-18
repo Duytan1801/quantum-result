@@ -8,8 +8,10 @@ import tempfile
 # into several messages instead of being cut off mid-sentence.
 DISCORD_MAX_LEN = 2000
 
-# How many rendered equation images to attach to one message.
-MAX_EQUATION_IMAGES = 5
+# How many rendered equation images to attach per reply. Math-heavy answers
+# were silently degrading every equation past the 5th into plain text, which
+# is where the mangled "tE = -4/3" in #model came from.
+MAX_EQUATION_IMAGES = 12
 
 
 def fit_discord(text: str, limit: int = DISCORD_MAX_LEN) -> str:
