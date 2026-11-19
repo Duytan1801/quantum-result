@@ -23,6 +23,12 @@ from storage import db_add_message, db_get_history, db_get_user_facts
 from tools import (
     draw_diagram,
     edit_file,
+    hf_dataset_info,
+    hf_download,
+    hf_model_info,
+    hf_read_file,
+    hf_search_datasets,
+    hf_search_models,
     paper_details,
     read_file,
     read_pdf,
@@ -43,6 +49,12 @@ STATUS_LABELS = {
     "search_papers": "📚 Searching academic papers...",
     "paper_details": "📚 Looking up the paper...",
     "read_pdf": "📄 Reading the PDF...",
+    "hf_search_models": "🤗 Searching Hugging Face models...",
+    "hf_search_datasets": "🤗 Searching Hugging Face datasets...",
+    "hf_model_info": "🤗 Reading the model card...",
+    "hf_dataset_info": "🤗 Reading the dataset card...",
+    "hf_read_file": "🤗 Reading the repository file...",
+    "hf_download": "⬇️ Downloading from Hugging Face...",
     "read_file": "📖 Reading file...",
     "write_file": "📝 Writing file...",
     "edit_file": "✏️ Editing file...",
@@ -115,6 +127,16 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "") -> str:
             "because of an older remembered note about failed runs.\n"
         )
 
+    # The Hugging Face token, so the model can download models and datasets
+    # itself - including the gated ones the account can reach.
+    hub_token_lines = ""
+    try:
+        from huggingface import token_prompt
+
+        hub_token_lines = token_prompt()
+    except Exception:
+        hub_token_lines = ""
+
     return (
         "You are a helpful assistant with a computational engine (WolframAlpha), code "
         "execution, web search, and file management abilities. "
@@ -150,6 +172,14 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "") -> str:
         "- read_pdf extracts the text of a PDF from a URL or a workspace file, "
         "page by page, so you can read the paper itself and cite the page you "
         "read it on.\n"
+        "- hf_search_models and hf_search_datasets search the Hugging Face Hub "
+        "for models and datasets that already exist, so you use one instead of "
+        "writing it. hf_model_info, hf_dataset_info and hf_read_file then read "
+        "the card and the files of the one you picked.\n"
+        + hub_token_lines
+        + "- To load a model or dataset in Python, install the client in the "
+        "sandbox first (pip install huggingface_hub), then use "
+        "snapshot_download or hf_hub_download with the token above.\n"
         "\n\n"
         "When to delegate to a background agent:\n"
         "- You have specialist agents available. When a request needs more than a "
@@ -178,6 +208,10 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "") -> str:
         "- You can see any pictures attached to the message. Describe them "
         "accurately: read charts, tables, screenshots, diagrams and text in "
         "images, and quote the numbers you can actually make out.\n"
+        "- When a picture contains text, the text is read out for you by a "
+        "document parser and given in a block marked as text read from the "
+        "image. That text is exact: use it as written, do not re-transcribe "
+        "the picture or doubt the numbers in it.\n"
         "- If an image is unclear or cut off, say so rather than guessing what "
         "it says.\n"
         "- If a picture shows figures, read the axis labels, units and scale "
@@ -335,6 +369,35 @@ async def _run_tool(name: str, args: dict, channel=None, user_id=None) -> str:
             args.get("source", ""),
             args.get("pages", "") or "",
             int(args.get("max_chars") or 60000),
+        )
+    if name == "hf_search_models":
+        return await hf_search_models(
+            args.get("query", ""),
+            int(args.get("limit") or 10),
+            args.get("sort") or "downloads",
+        )
+    if name == "hf_search_datasets":
+        return await hf_search_datasets(
+            args.get("query", ""),
+            int(args.get("limit") or 10),
+            args.get("sort") or "downloads",
+        )
+    if name == "hf_model_info":
+        return await hf_model_info(args.get("model_id", ""))
+    if name == "hf_dataset_info":
+        return await hf_dataset_info(args.get("dataset_id", ""))
+    if name == "hf_read_file":
+        return await hf_read_file(
+            args.get("repo_id", ""),
+            args.get("path", "") or "README.md",
+            args.get("repo_type", "") or "model",
+        )
+    if name == "hf_download":
+        return await hf_download(
+            args.get("repo_id", ""),
+            args.get("repo_type", "") or "model",
+            args.get("filename", "") or "",
+            int(args.get("max_bytes") or 2147483648),
         )
     if name == "write_file":
         return await write_file(args.get("file_path", ""), args.get("content", ""))

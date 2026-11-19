@@ -480,6 +480,56 @@ async def read_pdf(source: str, pages: str = "", max_chars: int = 60000) -> str:
     return extract_pdf_text(data, pages=pages, max_chars=max_chars)
 
 
+# ---------------------------------------------------------------------------
+# Hugging Face Hub
+# ---------------------------------------------------------------------------
+async def hf_search_models(query: str, limit: int = 10, sort: str = "downloads") -> str:
+    """Search the Hugging Face Hub for models."""
+    from huggingface import search_models
+
+    return await search_models(query, limit=limit, sort=sort)
+
+
+async def hf_search_datasets(query: str, limit: int = 10, sort: str = "downloads") -> str:
+    """Search the Hugging Face Hub for datasets."""
+    from huggingface import search_datasets
+
+    return await search_datasets(query, limit=limit, sort=sort)
+
+
+async def hf_model_info(model_id: str) -> str:
+    """Read a model's card, tags and file list from the Hub."""
+    from huggingface import model_info
+
+    return await model_info(model_id)
+
+
+async def hf_dataset_info(dataset_id: str) -> str:
+    """Read a dataset's card, tags and file list from the Hub."""
+    from huggingface import dataset_info
+
+    return await dataset_info(dataset_id)
+
+
+async def hf_read_file(repo_id: str, path: str = "README.md",
+                       repo_type: str = "model") -> str:
+    """Read a file out of a Hub repository."""
+    from huggingface import read_repo_file
+
+    return await read_repo_file(repo_id, path=path, repo_type=repo_type)
+
+
+async def hf_download(repo_id: str, repo_type: str = "model", filename: str = "",
+                      max_bytes: int = 2 * 1024 * 1024 * 1024) -> str:
+    """Download a model or dataset from the Hub into the workspace."""
+    from huggingface import download_repo
+
+    dest = os.path.join(BASE_DIR, "hf", repo_type, repo_id.replace("/", "--"))
+    os.makedirs(dest, exist_ok=True)
+    return await download_repo(repo_id, repo_type=repo_type, filename=filename,
+                               dest=dest, max_bytes=max_bytes)
+
+
 TOOLS = [
     {
         "type": "function",
@@ -725,6 +775,129 @@ TOOLS = [
                     "max_chars": {"type": "integer", "description": "Maximum characters to return (default 60000)", "default": 60000},
                 },
                 "required": ["source"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hf_search_models",
+            "description": (
+                "Search the Hugging Face Hub for models. Use it to find a model "
+                "that already does what the user wants - text generation, "
+                "embeddings, image generation, speech, classification - instead "
+                "of writing one from scratch. Returns the model id, its task, "
+                "downloads, likes and tags."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to look for, e.g. 'text-to-image' or 'code llama'"},
+                    "limit": {"type": "integer", "description": "Number of models to return (default 10, max 50)", "default": 10},
+                    "sort": {"type": "string", "description": "Sort by 'downloads' (default), 'likes', 'trending' or 'lastModified'", "default": "downloads"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hf_search_datasets",
+            "description": (
+                "Search the Hugging Face Hub for datasets. Use it when the task "
+                "needs real data to work on - a corpus to analyse, a benchmark "
+                "to run, images or audio to process. Returns the dataset id, "
+                "downloads, likes and tags."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to look for, e.g. 'financial sentiment' or 'medical images'"},
+                    "limit": {"type": "integer", "description": "Number of datasets to return (default 10, max 50)", "default": 10},
+                    "sort": {"type": "string", "description": "Sort by 'downloads' (default), 'likes', 'trending' or 'lastModified'", "default": "downloads"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hf_model_info",
+            "description": (
+                "Read one Hugging Face model: its card (what it does, how to "
+                "run it), its tags, license, base model and the files in the "
+                "repository. Use it after hf_search_models to find out how a "
+                "specific model is meant to be used."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "model_id": {"type": "string", "description": "The model id, e.g. 'meta-llama/Llama-3.1-8B-Instruct'"},
+                },
+                "required": ["model_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hf_dataset_info",
+            "description": (
+                "Read one Hugging Face dataset: its card (what is in it, how it "
+                "is split, how to load it), its tags, license and the files in "
+                "the repository. Use it after hf_search_datasets."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dataset_id": {"type": "string", "description": "The dataset id, e.g. 'squad'"},
+                },
+                "required": ["dataset_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hf_read_file",
+            "description": (
+                "Read a file out of a Hugging Face repository - the model card, "
+                "a config.json, a dataset script, a sample data file. Use it "
+                "when the card does not say enough."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_id": {"type": "string", "description": "The repository id, e.g. 'meta-llama/Llama-3.1-8B-Instruct'"},
+                    "path": {"type": "string", "description": "Path inside the repository (default: README.md)", "default": "README.md"},
+                    "repo_type": {"type": "string", "description": "'model' (default) or 'dataset'", "default": "model"},
+                },
+                "required": ["repo_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hf_download",
+            "description": (
+                "Download a model or dataset from the Hugging Face Hub into the "
+                "workspace, using the Hub token so gated repositories work too. "
+                "Give a filename to download just that file, or leave it empty "
+                "for the whole repository. The files land in the workspace, "
+                "where you can read them with read_file."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_id": {"type": "string", "description": "The repository id, e.g. 'gpt2' or 'squad'"},
+                    "repo_type": {"type": "string", "description": "'model' (default) or 'dataset'", "default": "model"},
+                    "filename": {"type": "string", "description": "One file to download (default: the whole repository)"},
+                    "max_bytes": {"type": "integer", "description": "Size limit in bytes (default 2 GB)", "default": 2147483648},
+                },
+                "required": ["repo_id"],
             },
         },
     },

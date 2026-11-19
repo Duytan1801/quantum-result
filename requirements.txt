@@ -20,3 +20,5 @@ scholarly
 # renamed. Without this pin the import fails and every paper search dies.
 bibtexparser<2
 pymupdf
+# The Hub client, used to download models and datasets.
+huggingface_hub

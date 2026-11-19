@@ -48,6 +48,11 @@ KAGGLE_API_TOKEN = os.getenv("KAGGLE_API_TOKEN")
 KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 KAGGLE_KEY = os.getenv("KAGGLE_KEY")
 
+# Hugging Face Hub. The token lets the bot see the private and gated
+# repositories the account can reach, and gives it the account's rate limit
+# rather than the anonymous one.
+HUGGINGFACE_TOKEN = os.getenv("HUGGINGFACE_TOKEN") or os.getenv("HF_TOKEN")
+
 # Which backend the plain `code` tool uses.
 #
 #   daytona  (default) a fast sandbox: ~0.3s per call, but a bare environment.

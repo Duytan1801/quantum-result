@@ -17,12 +17,17 @@ def _tool_subset(*names: str) -> list:
 RESEARCH_TOOLS = ("web_search", "read_file", "write_file", "edit_file", "code",
                   "wolfram_alpha", "verify_claims", "draw_diagram",
                   "kaggle_run", "kaggle_datasets",
-                  "search_papers", "paper_details", "read_pdf")
+                  "search_papers", "paper_details", "read_pdf",
+                  "hf_search_models", "hf_search_datasets",
+                  "hf_model_info", "hf_dataset_info", "hf_read_file")
 ANALYZE_TOOLS = ("code", "wolfram_alpha", "web_search", "read_file", "write_file",
                  "edit_file", "verify_claims", "draw_diagram", "kaggle_run",
-                 "kaggle_datasets", "read_pdf", "search_papers")
+                 "kaggle_datasets", "read_pdf", "search_papers",
+                 "hf_search_models", "hf_search_datasets",
+                 "hf_model_info", "hf_dataset_info")
 CODE_TOOLS = ("code", "read_file", "write_file", "edit_file", "web_search",
-              "draw_diagram", "kaggle_run", "read_pdf")
+              "draw_diagram", "kaggle_run", "read_pdf",
+              "hf_search_models", "hf_read_file")
 EXPLORE_TOOLS = ("web_search", "read_file", "code", "wolfram_alpha", "draw_diagram",
                  "read_pdf")
 
