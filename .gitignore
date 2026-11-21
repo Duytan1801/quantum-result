@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+venv/
+.env.local
+.DS_Store
+bot_files/
+render/node_modules/
