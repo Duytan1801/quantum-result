@@ -144,12 +144,14 @@ async def classify_reply(text: str, *, author_name: str, roster_line: str,
     in which case the bot stays quiet, because a bot that cannot tell is
     better quiet than wrong.
 
-    Only NVIDIA is used here. The answer is one character, so there is
-    nothing to be gained from a second provider, and a failed call should
-    not quietly become a different model's opinion.
+    Only NVIDIA's endpoint is used here - MiniMax M3.1 Flash first, then
+    Nemotron. The answer is one character, so there is nothing to be gained
+    from Groq, and a failed call should not quietly become a different
+    provider's opinion.
     """
     try:
-        from config import NVIDIA_MODEL, extra_body_for, nvidia_client
+        from config import (MINIMAX_MODEL, NVIDIA_MODEL, extra_body_for,
+                            nvidia_client)
     except Exception as exc:
         print(f"presence classifier unavailable: {exc}")
         return None
@@ -168,23 +170,24 @@ async def classify_reply(text: str, *, author_name: str, roster_line: str,
     # Thinking is switched off: the answer is one character, and a model
     # that reasons first would spend the whole token budget before saying
     # "1".
-    for tokens in (_CLASSIFIER_TOKENS, 16):
-        try:
-            resp = await nvidia_client.chat.completions.create(
-                model=NVIDIA_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                max_completion_tokens=tokens,
-                extra_body=extra_body_for("NVIDIA", thinking=False),
-            )
-            content = (resp.choices[0].message.content or "").strip()
-        except Exception as exc:
-            print(f"presence classifier failed: {exc}")
-            return None
-        verdict = _parse_verdict(content)
-        if verdict is not None:
-            return verdict
-        # Nothing usable came back; give it one more try with more room.
+    for model in (MINIMAX_MODEL, NVIDIA_MODEL):
+        for tokens in (_CLASSIFIER_TOKENS, 16):
+            try:
+                resp = await nvidia_client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0,
+                    max_completion_tokens=tokens,
+                    extra_body=extra_body_for("MiniMax", thinking=False),
+                )
+                content = (resp.choices[0].message.content or "").strip()
+            except Exception as exc:
+                print(f"presence classifier failed on {model}: {exc}")
+                break
+            verdict = _parse_verdict(content)
+            if verdict is not None:
+                return verdict
+            # Nothing usable came back; give it one more try with more room.
     return None
 
 

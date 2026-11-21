@@ -13,6 +13,7 @@ from config import (
     NVIDIA_MODEL,
     extra_body_for,
     provider_chain,
+    vision_models,
 )
 from agents import TOOLS, agent_catalogue
 from context import (
@@ -114,9 +115,30 @@ FRESHNESS_REMINDER = (
 )
 
 
+def _has_image(messages) -> bool:
+    """Does this turn carry a picture?
+
+    The picture is in the user message as a content list with an
+    `image_url` part. MiniMax M3.1 Flash cannot look at one, so a turn
+    that has one goes to Nemotron instead.
+    """
+    for message in messages or []:
+        content = message.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    return True
+    return False
+
+
 def _footer_for(result: dict) -> str:
-    """Build the small grey footer line: model + tools used."""
-    parts = [NVIDIA_MODEL]
+    """Build the small grey footer line: model + tools used.
+
+    The model is the one that actually answered, not the one that was
+    configured first - so the footer tells the truth about which model
+    produced the reply.
+    """
+    parts = [result.get("model") or NVIDIA_MODEL]
     if result.get("tools_used"):
         parts.append(" · ".join(result["tools_used"]))
     return " · ".join(parts)
@@ -542,6 +564,12 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     if tools is None:
         tools = TOOLS
 
+    # A turn that carries a picture needs a model that can see one. MiniMax
+    # M3.1 Flash cannot, so it is skipped for those turns and Nemotron goes
+    # first; everything else starts with MiniMax, which is much faster.
+    chain = (vision_models() if _has_image(messages)
+             else provider_chain())
+
     # The request as it was before this turn started, and the answers the
     # model has already given in this conversation. The finished answer is
     # checked against them, so a reply that is a copy can be caught.
@@ -556,6 +584,10 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     step_count = 0
     failed_count = 0
     continued = False
+    # Which model actually produced the answer. The footer shows this, so
+    # it has to be the model that really answered rather than the one that
+    # was configured first.
+    used_model = ""
     # How many times each exact tool call has been made, and how many times
     # each tool has been called at all.
     call_counts = {}
@@ -577,10 +609,12 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
         # Keep the request inside the model's context window.
         messages = trim_context(messages)
 
-        # Try NVIDIA first, fall back to Groq if NVIDIA is unavailable.
+        # Try the models in order: MiniMax first, then Nemotron, then Groq.
+        # A turn with a picture in it skips MiniMax, which cannot look at
+        # images, and goes to Nemotron first.
         stream = None
         last_error = None
-        for _name, client, model in provider_chain():
+        for _name, client, model in chain:
             try:
                 stream = await client.chat.completions.create(
                     model=model,
@@ -593,6 +627,7 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                     tool_choice="auto",
                     extra_body=extra_body_for(_name),
                 )
+                used_model = model
                 break
             except Exception as exc:
                 last_error = exc
@@ -605,6 +640,7 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                 "answer": final_answer or "LLM API error",
                 "tools_used": tools_used,
                 "steps": step_count,
+                "model": used_model,
             }
 
         step_content = ""
@@ -646,6 +682,7 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                 "answer": final_answer or "LLM stream error",
                 "tools_used": tools_used,
                 "steps": step_count,
+                "model": used_model,
             }
 
         if tool_calls_accum:
@@ -834,6 +871,7 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
         "answer": answer,
         "tools_used": tools_used,
         "steps": step_count,
+        "model": used_model,
     }
 
 

@@ -19,6 +19,23 @@ def _require(*names: str) -> None:
 
 
 # --- LLM providers --------------------------------------------------------
+#
+# Three models, tried in this order. The first one that answers does the
+# work; the others are there for when one is down, rate-limited, or simply
+# cannot do what was asked.
+#
+# 1. MiniMax M3.1 Flash - the fast one. It answers in about a second and
+#    handles tool calls, thinking and one-character answers, so it is the
+#    default for everything.
+# 2. Nemotron 3.5 Super VL - the strong one. Slower, but better at the long
+#    tool-calling turns that need several steps, and it is the only one that
+#    can look at a picture.
+# 3. Groq - the last resort, in case NVIDIA as a whole is unreachable.
+#
+# MiniMax and Nemotron are both served from NVIDIA's endpoint, so they share
+# one client and one key. Only the model name changes between them.
+
+MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "minimaxai/minimax-m3.1-flash")
 NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3.5-super-vl-120b-a12b")
 NVIDIA_API_URL = os.getenv("NVIDIA_API_URL", "https://integrate.api.nvidia.com/v1")
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
@@ -105,7 +122,33 @@ groq_client = (
 
 
 def provider_chain() -> list[tuple[str, AsyncOpenAI, str]]:
-    """Providers to try in order: NVIDIA first, then Groq as a fallback."""
+    """Providers to try in order: MiniMax first, then Nemotron, then Groq.
+
+    Each entry is (name, client, model). The name is what
+    `extra_body_for` keys off, so "MiniMax" and "NVIDIA" must both be
+    recognised there.
+
+    The order is deliberate. MiniMax M3.1 Flash is the quickest of the
+    three and handles tool calls and thinking perfectly well, so it does
+    the ordinary work. Nemotron is the slower, stronger model and stays in
+    the chain for the long multi-step turns - and because it is the one
+    that can read a picture, a turn with an image is sent to it directly
+    (see `vision_models`).
+    """
+    chain = [("MiniMax", nvidia_client, MINIMAX_MODEL),
+             ("NVIDIA", nvidia_client, NVIDIA_MODEL)]
+    if groq_client is not None:
+        chain.append(("Groq", groq_client, GROQ_MODEL))
+    return chain
+
+
+def vision_models() -> list[tuple[str, AsyncOpenAI, str]]:
+    """The chain for a turn that has a picture in it.
+
+    MiniMax M3.1 Flash cannot look at images, so a turn with an attachment
+    goes straight to Nemotron, which can. If Nemotron is down, Groq gets a
+    turn with the picture described as text rather than no answer at all.
+    """
     chain = [("NVIDIA", nvidia_client, NVIDIA_MODEL)]
     if groq_client is not None:
         chain.append(("Groq", groq_client, GROQ_MODEL))
@@ -123,8 +166,13 @@ def extra_body_for(provider_name: str, thinking: bool = True) -> dict:
 
     `thinking=False` is for the small calls that need a direct answer - the
     presence classifier, for instance, which has one character to say.
+
+    MiniMax is served from NVIDIA's endpoint and takes the same flag, so it
+    is treated like NVIDIA here. It was checked against the live endpoint:
+    with thinking on, it reasons in `reasoning_content` and answers in
+    `content`, exactly like Nemotron does.
     """
-    if provider_name == "NVIDIA":
+    if provider_name in ("NVIDIA", "MiniMax"):
         return {"chat_template_kwargs": {"enable_thinking": bool(thinking)}}
     return {}
 
