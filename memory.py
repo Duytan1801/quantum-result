@@ -601,8 +601,8 @@ async def reembed_stale_memories(user_id: str = None) -> int:
 # ---------------------------------------------------------------------------
 # Extraction
 # ---------------------------------------------------------------------------
-_EXTRACT_PROMPT = (
-    "Extract the durable facts about the USER from this exchange that would be "
+_EXTRACT_PROMPT_TEMPLATE = (
+    "Extract the durable facts about {subject} from this exchange that would be "
     "useful in a much later conversation: who they are, what they are working "
     "on, their preferences, their decisions, their plans, the numbers and dates "
     "that concern them, and the people in their life.\n"
@@ -612,12 +612,16 @@ _EXTRACT_PROMPT = (
     "- If the exchange updates something stated earlier, write the NEW value.\n"
     "- Mark every candidate with \"about_user\": true ONLY if it is a fact about "
     "the person who is talking. Everything else must be false.\n"
-    "- Write each memory so that it is obviously about that person: start it "
-    "with \"The user\" or use their name. A sentence that names no person at "
-    "all will be thrown away.\n"    "- A fact about the world is NOT a fact about the user. General knowledge, "
+    "- Write each memory so that it is obviously about a person: start it with "
+    "\"{name}\", or with \"{name} and somebody\" when it is about more than one "
+    "person. A sentence that names no person at all will be thrown away.\n"
+    "- A fact about the world is NOT a fact about the user. General knowledge, "
     "research findings, definitions, homework solutions, history, product facts "
     "and statistics are all about_user: false, even when the user asked for "
     "them and even when the answer was good.\n"
+    "- Capture how people relate to each other when it is durable and settled - "
+    "who is together with whom, who is family, who works with whom. Write it "
+    "as a fact about the people, with their names.\n"
     "- NEVER store facts about whether a tool, service, API, credential, "
     "environment or network is available, working or configured (Kaggle, the "
     "sandbox, internet access, tokens). Those states change between deploys, "
@@ -632,6 +636,24 @@ _EXTRACT_PROMPT = (
     "\"about_user\": true}]}\n"
     "where kind is one of fact, decision, finding, preference."
 )
+
+
+def _extract_prompt(person_name: str = None) -> str:
+    """The extraction prompt, with the name of the person talking.
+
+    The name matters more than it looks. In a room with more than one
+    person, a memory that says "the user is an applied math major" is
+    ambiguous - it could be about either of them - and a memory the model
+    cannot attribute is a memory it will get wrong.
+    """
+    name = (person_name or "").strip()
+    if not name:
+        name = "the person talking"
+    subject = name if name != "the person talking" else "the person talking"
+    # Replaced rather than formatted: the prompt contains JSON braces.
+    return (_EXTRACT_PROMPT_TEMPLATE
+            .replace("{name}", name)
+            .replace("{subject}", subject))
 
 # ---------------------------------------------------------------------------
 # What must never become a memory
@@ -683,8 +705,39 @@ _USER_SIGNAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The same rule, but with the name of whoever is talking. Built per call and
+# cached, because the names change from room to room.
+_PERSON_SIGNALS: dict = {}
 
-def _is_about_user(candidate: dict) -> bool:
+
+def _person_signal(person_name: str = None) -> re.Pattern:
+    """The pattern that finds a person being named in a sentence."""
+    key = (person_name or "").strip().lower()
+    cached = _PERSON_SIGNALS.get(key)
+    if cached is not None:
+        return cached
+
+    names = ["the user", "the creator"]
+    try:
+        from config import OWNER_NAME
+
+        if OWNER_NAME:
+            names.append(OWNER_NAME)
+    except Exception:
+        pass
+    if key:
+        names.append(key)
+
+    parts = [re.escape(n).replace(r"\ ", r"\s+") for n in names]
+    pattern = re.compile(
+        r"\b(?:" + "|".join(parts) + r")\b|^\s*(?:i|my|me)\b",
+        re.IGNORECASE,
+    )
+    _PERSON_SIGNALS[key] = pattern
+    return pattern
+
+
+def _is_about_user(candidate: dict, person_name: str = None) -> bool:
     """Should this extracted candidate be stored as a memory about the user?"""
     content = (candidate.get("content") or "").strip()
     if not content:
@@ -706,7 +759,7 @@ def _is_about_user(candidate: dict) -> bool:
     # person. "The user is an applied math major" qualifies; "Vietnam's CPI
     # was +5.09% in October 2026" does not, however confident the extractor
     # was about it.
-    return bool(_USER_SIGNAL_RE.search(content))
+    return bool(_person_signal(person_name).search(content))
 
 
 # Conversations too small to hold a durable fact. Extracting from these costs
@@ -743,14 +796,18 @@ def worth_extracting(user_message: str, answer: str) -> bool:
     return True
 
 
-async def extract_memories(text: str) -> list[dict]:
-    """Use the LLM to pull durable facts out of a piece of text."""
+async def extract_memories(text: str, person_name: str = None) -> list[dict]:
+    """Use the LLM to pull durable facts out of a piece of text.
+
+    `person_name` is who was talking, so the memories are written with a
+    name in them rather than with "the user".
+    """
     if not text or len(text.strip()) < 40:
         return []
 
     request = {
         "messages": [
-            {"role": "system", "content": _EXTRACT_PROMPT},
+            {"role": "system", "content": _extract_prompt(person_name)},
             {"role": "user", "content": text[:12000]},
         ],
         "temperature": 0.1,
@@ -772,7 +829,7 @@ async def extract_memories(text: str) -> list[dict]:
             for m in memories:
                 if not isinstance(m, dict) or not m.get("content"):
                     continue
-                if not _is_about_user(m):
+                if not _is_about_user(m, person_name):
                     continue
                 kept.append({
                     "content": m["content"].strip(),

@@ -1,87 +1,55 @@
-"""Deciding when the bot should speak, and with which context.
+"""Deciding when the bot should speak.
 
-Two problems are solved here.
+This used to be a list of keywords. The bot had a table of "task verbs" and
+a table of "subjects it knows about", and it decided from those whether a
+message was for it. That is brittle in a way that is easy to see once you
+look at two real messages:
 
-**The bot answered everything.** Chat mode was on in #model, so the bot
-replied to every single message - including the ones plainly meant for
-somebody else, and including the other people's casual chat. In a channel
-with more than one person it now waits to be spoken to.
+    "can you look up the Nvidia earnings date?"
+    "did you finish the report?"
 
-**Each person had their own database.** In a channel with more than one
-person the conversation and the long-term memory are shared, so the bot
-knows what everyone in the room has been talking about. The scope key is
-what makes that work: a channel with several people gets one scope, and a
-private chat keeps the per-user one.
+Those differ by a couple of words, and no keyword list gets both right at
+the same time - every list either misses the first or answers the second.
+So the list is gone.
+
+What is left is two layers:
+
+**Structure**, which is free and exact. A real mention, a reply to one of
+the bot's own messages, the bot's own name (derived from its Discord user,
+not written down). Those are unambiguous, and they are how people actually
+ask a bot something.
+
+**Reading the room**, for everything else. A small call to the same model
+that does the answering, asked one question - should I reply to this? - and
+answered with a single character, 1 or 0. It sees the message, who wrote it,
+and who else is in the chat, so it can tell a question aimed at the bot
+from a question aimed at the person next to it.
 """
 
-import re
+import json
+import os
+from dataclasses import dataclass
 
-# The names people use for the bot. A message that uses one of them is
-# addressed to the bot even without a real mention.
-BOT_NAMES = ("lain", "lain2", "lainbot", "assistant", "bot")
+from people import mentioned, replies_to_bot, says_bot_name
 
-# A message that asks for some work to be done. These verbs mean "do this
-# task", which is what separates a request for the bot from two people
-# talking to each other ("did you finish the report?" is a question, but it
-# is not a task).
-TASK_VERBS = (
-    "search", "look up", "lookup", "find out", "explain", "summarise",
-    "summarize", "translate", "calculate", "compute", "research", "plot",
-    "draw", "build", "write", "run", "check", "verify", "analyse", "analyze",
-    "parse", "extract", "fetch", "download", "debug", "fix", "code",
-)
+# The classifier's answer is cached by message id: the same message is
+# looked at twice - once before the channel lock and once after it - and
+# the classifier is a network call that must not be paid for twice.
+_DECISIONS: dict = {}
+_CACHE_MAX = 500
 
-# Questions. A question in a shared channel is not automatically for the bot -
-# people ask each other questions all the time - but a question about one of
-# these subjects usually is.
-QUESTION_WORDS = ("what", "why", "how", "when", "where", "who", "which",
-                  "is", "are", "do", "does", "can", "could", "should", "will")
+# How many tokens the classifier may use. It answers one character, so this
+# is a safety net rather than a budget.
+_CLASSIFIER_TOKENS = int(os.getenv("PRESENCE_CLASSIFIER_TOKENS", "4"))
 
-# Subjects the bot is the right person for. With chat mode on, a question
-# about one of these is worth answering even without a mention.
-BOT_TOPICS = (
-    "weather", "temperature", "forecast", "price", "stock", "share price",
-    "market cap", "exchange rate", "inflation", "cpi", "gdp", "unemployment",
-    "interest rate", "news", "headline", "paper", "arxiv", "citation",
-    "literature", "code", "error", "traceback", "bug", "exception", "api",
-    "python", "javascript", "sql", "regex", "equation", "formula", "theorem",
-    "proof", "derivative", "integral", "matrix", "eigenvalue", "probability",
-    "kaggle", "dataset", "model", "pytorch", "tensorflow", "hugging face",
-    "covid", "crypto", "bitcoin", "gold price", "oil price", "company",
-    "revenue", "earnings", "valuation",
-    # The channel is bilingual, so the same subjects in Vietnamese.
-    "thời tiết", "cổ phiếu", "chứng khoán", "tin tức", "bài báo", "lãi suất",
-    "tỷ giá", "lạm phát", "giá vàng", "dự báo", "tăng trưởng",
-)
 
-# A request aimed at the listener: "can you look up X", "would you explain Y".
-_AIMED_RE = re.compile(
-    r"(?<![a-z])(?:can|could|would|will|you\s+please|please)\s+"
-    r"(?:you\s+)?(?:help\s+me|" +
-    "|".join(re.escape(v) for v in TASK_VERBS) + r")(?![a-z])",
-    re.IGNORECASE,
-)
+@dataclass
+class Decision:
+    """Should the bot answer, and why."""
 
-# An instruction: "look up X", "explain the proof", "plot the clusters".
-_INSTRUCTION_RE = re.compile(
-    r"^\s*(?:please\s+|hey\s+|ok\s+|okay\s+)?(?:" +
-    "|".join(re.escape(v) for v in TASK_VERBS) + r")(?![a-z])",
-    re.IGNORECASE,
-)
-
-# An instruction that comes after a clause: "the fourth one, explain it".
-_FOLLOWUP_RE = re.compile(
-    r"(?:,|\band\b|\bthen\b|\balso\b|\bnow\b|\bpls\b)\s+"
-    r"(?:please\s+|can you\s+|could you\s+)?(?:" +
-    "|".join(re.escape(v) for v in TASK_VERBS) + r")(?![a-z])",
-    re.IGNORECASE,
-)
-
-# A question about one of the bot's subjects.
-_TOPIC_RE = re.compile(
-    r"(?<![a-z])(?:" + "|".join(re.escape(t) for t in BOT_TOPICS) + r")(?![a-z])",
-    re.IGNORECASE,
-)
+    reply: bool
+    reason: str
+    from_classifier: bool = False
 
 
 def channel_scope(channel_id) -> str:
@@ -89,129 +57,194 @@ def channel_scope(channel_id) -> str:
     return f"channel:{channel_id}"
 
 
-def _norm(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "").strip().lower())
+def _cache_put(key, value) -> None:
+    _DECISIONS[key] = value
+    if len(_DECISIONS) > _CACHE_MAX:
+        for old in list(_DECISIONS)[:-_CACHE_MAX]:
+            _DECISIONS.pop(old, None)
 
 
-def _mentions_name(text: str, names) -> bool:
-    """Does the message use one of the bot's names?"""
-    low = _norm(text)
-    for name in names:
-        # A whole word, so "bot" does not match "robotics" and "lain" does
-        # not match "explain".
-        if re.search(rf"(?<![a-z]){re.escape(name.lower())}(?![a-z])", low):
-            return True
-    return False
+# ---------------------------------------------------------------------------
+# The classifier
+# ---------------------------------------------------------------------------
+
+_CLASSIFIER_RULE_CHAT = (
+    "Chat mode is ON for this chat: the bot is here to JOIN IN, not only to "
+    "be summoned. Reply 1 if any of these is true:\n"
+    "- the message is addressed to the bot - a mention, its name, a reply to "
+    "one of its own messages, or a direct request ('can you look up X');\n"
+    "- the message asks something the bot would clearly be the best person to "
+    "answer: a fact, current events, prices, the weather, a paper, code, "
+    "maths, or anything where it knows more than the people in the chat;\n"
+    "- the message is an open question with a real answer, or a topic the bot "
+    "could genuinely add something useful to.\n"
+    "Reply 0 when the message is:\n"
+    "- small talk with nothing in it to answer ('cai gi vay troi', 'hello', "
+    "'yo', 'ok', 'good morning');\n"
+    "- banter, or personal chat between the people in the room;\n"
+    "- a question aimed at somebody else, or about somebody else by name;\n"
+    "- somebody thinking out loud, or talking to themselves."
+)
+
+_CLASSIFIER_RULE_QUIET = (
+    "Reply 1 ONLY if the message is clearly addressed to the bot: a mention, "
+    "its name, a reply to one of its own messages, or a direct request to the "
+    "bot ('can you look up X'). Reply 0 for everything else, including "
+    "anything that looks like a task but is aimed at somebody else."
+)
+
+# Two examples of each answer. The classifier answers one character, so the
+# examples are what decide the character - without them it drifts towards
+# "0" and the bot goes quiet in a room it should be joining.
+_CLASSIFIER_EXAMPLES = (
+    "Examples:\n"
+    'Message from someone in the chat: "can you look up the Nvidia earnings date?" -> 1\n'
+    'Message from someone in the chat: "did you finish the report?" -> 0\n'
+    'Message from someone in the chat: "what is the weather in Hanoi right now?" -> 1\n'
+    'Message from someone in the chat: "mệt quá đi, hôm nay học nhiều quá" -> 0\n'
+    'Message from someone in the chat: "what do you think about the new model?" -> 1\n'
+    'Message from someone in the chat: "cai gi vậy trời" -> 0\n'
+    'Message from someone in the chat: "hows jade" -> 0\n'
+    'Message from someone in the chat: "hello?" -> 0\n'
+)
 
 
-def looks_like_request(text: str) -> bool:
-    """Is this a request for some work to be done?
+def _classifier_prompt(text: str, *, author_name: str, roster_line: str,
+                       bot_name: str, chat_on: bool) -> str:
+    rule = _CLASSIFIER_RULE_CHAT if chat_on else _CLASSIFIER_RULE_QUIET
+    people = roster_line or author_name
+    return (
+        f'A bot named "{bot_name}" is in a group chat with: {people}.\n\n'
+        f"Message from {author_name}:\n"
+        f'"{text[:1500]}"\n\n'
+        f"{rule}\n\n"
+        + (_CLASSIFIER_EXAMPLES if chat_on else "")
+        + "\nAnswer with one character: 1 or 0."
+    )
 
-    Deliberately narrow. "Did you finish the report?" is a question but not a
-    task, and answering it in a room where two people are talking is exactly
-    the noise this is meant to stop.
+
+def _parse_verdict(content: str) -> bool | None:
+    """Read the classifier's one-character answer.
+
+    True means reply, False means stay quiet, None means the answer was not
+    usable - and then the bot stays quiet, because a bot that cannot tell is
+    better quiet than wrong.
     """
-    low = _norm(text)
-    if not low:
-        return False
-    if _AIMED_RE.search(low):
-        return True
-    if _INSTRUCTION_RE.match(low):
-        return True
-    if _FOLLOWUP_RE.search(low):
-        return True
-    return False
+    for char in (content or "").strip():
+        if char in "01":
+            return char == "1"
+    return None
 
 
-def looks_like_bot_question(text: str) -> bool:
-    """Is this a question about something the bot is the right person for?"""
-    low = _norm(text)
-    if not low or "?" not in low:
-        return False
-    if not _TOPIC_RE.search(low):
-        return False
-    stripped = low.rstrip("?!. ")
-    first = stripped.split(" ")[0] if stripped else ""
-    # "what's" and "how's" are questions too.
-    first = re.sub(r"'s$", "", first)
-    return first in QUESTION_WORDS or looks_like_request(text)
+async def classify_reply(text: str, *, author_name: str, roster_line: str,
+                         bot_name: str, chat_on: bool) -> bool | None:
+    """Ask the model whether this message is for the bot.
+
+    Returns True (reply), False (stay quiet) or None if the call failed -
+    in which case the bot stays quiet, because a bot that cannot tell is
+    better quiet than wrong.
+
+    Only NVIDIA is used here. The answer is one character, so there is
+    nothing to be gained from a second provider, and a failed call should
+    not quietly become a different model's opinion.
+    """
+    try:
+        from config import NVIDIA_MODEL, extra_body_for, nvidia_client
+    except Exception as exc:
+        print(f"presence classifier unavailable: {exc}")
+        return None
+
+    if nvidia_client is None:
+        return None
+
+    prompt = _classifier_prompt(
+        text,
+        author_name=author_name,
+        roster_line=roster_line,
+        bot_name=bot_name,
+        chat_on=chat_on,
+    )
+
+    # Thinking is switched off: the answer is one character, and a model
+    # that reasons first would spend the whole token budget before saying
+    # "1".
+    for tokens in (_CLASSIFIER_TOKENS, 16):
+        try:
+            resp = await nvidia_client.chat.completions.create(
+                model=NVIDIA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_completion_tokens=tokens,
+                extra_body=extra_body_for("NVIDIA", thinking=False),
+            )
+            content = (resp.choices[0].message.content or "").strip()
+        except Exception as exc:
+            print(f"presence classifier failed: {exc}")
+            return None
+        verdict = _parse_verdict(content)
+        if verdict is not None:
+            return verdict
+        # Nothing usable came back; give it one more try with more room.
+    return None
 
 
-def addressed_to_bot(text: str, *, names, bot_user_id=None) -> bool:
-    """Was this message meant for the bot?"""
-    if not text:
-        return False
-    if bot_user_id:
-        if f"<@{bot_user_id}>" in text or f"<@!{bot_user_id}>" in text:
-            return True
-    if _mentions_name(text, names):
-        return True
-    return False
+# ---------------------------------------------------------------------------
+# The decision
+# ---------------------------------------------------------------------------
 
-
-def should_answer(message, *, is_dm: bool, participants: set,
-                  bot_user_id=None, names=BOT_NAMES,
-                  bot_message_ids=None, chat_on: bool = False,
-                  shared: bool = None) -> tuple[bool, str]:
+async def decide(message, *, is_dm: bool, shared: bool, bot_user_id=None,
+                 bot_names=(), bot_message_ids=None, chat_on: bool = False,
+                 roster=None, author_name: str = "", roster_line: str = "",
+                 bot_name: str = "the bot") -> Decision:
     """Should the bot answer this message?
 
-    Returns (answer, reason). The reason is for the log, so it is clear why
-    the bot stayed quiet.
-
-    The rule of thumb: in a private conversation the bot always answers. In
-    a room with more than one person it answers when it is spoken to, and
-    stays out of the way otherwise.
-
-    `shared` overrides the count of participants, for the case where the
-    channel is known to be a room but the tracker has only just started.
+    The structural checks are exact and free. Everything else is decided by
+    the model reading the room, and the answer is cached so the second look
+    (after the channel lock) costs nothing.
     """
-    text = message.content or ""
-    author = message.author
+    author = getattr(message, "author", None)
+    if author is not None and getattr(author, "bot", False):
+        return Decision(False, "the author is a bot")
 
-    # The bot never talks to itself, and a message from another bot is not
-    # for it.
-    if getattr(author, "bot", False):
-        return False, "the author is a bot"
+    text = getattr(message, "content", "") or ""
 
     if is_dm:
-        return True, "private message"
-
-    if shared is None:
-        shared = len(participants or set()) >= 2
+        return Decision(True, "private message")
 
     if not shared:
         # One human and the bot. There is nobody else to talk to.
-        return True, "one-to-one channel"
+        return Decision(True, "one-to-one channel")
 
-    # In a room, a real mention is the clearest sign.
-    if bot_user_id and (f"<@{bot_user_id}>" in text or f"<@!{bot_user_id}>" in text):
-        return True, "mentioned"
+    if mentioned(message, bot_user_id):
+        return Decision(True, "mentioned")
 
-    # A reply to one of the bot's own messages is addressed to the bot.
-    ref = getattr(message, "reference", None)
-    if ref is not None and getattr(ref, "message_id", None):
-        if bot_message_ids and ref.message_id in bot_message_ids:
-            return True, "replying to the bot"
+    if replies_to_bot(message, bot_message_ids):
+        return Decision(True, "replying to the bot")
 
-    # The bot's name in the text.
-    if _mentions_name(text, names):
-        return True, "named in the message"
+    if says_bot_name(text, bot_names):
+        return Decision(True, "named in the message")
 
-    # A request for work: "can you look up X", "explain the proof", "the
-    # fourth one, explain it". This is the bot being useful without being
-    # summoned by name.
-    if looks_like_request(text):
-        return True, "clear request"
-
-    if chat_on:
-        # Chat mode is on for this channel, which means the owner wants the
-        # bot to join in. It still waits for something that looks like it is
-        # addressed to it, but it will speak up about anything it can help
-        # with.
-        if looks_like_bot_question(text):
-            return True, "chat mode, question about a bot subject"
-
-    return False, "not addressed to the bot"
+    # Nothing structural. Let the model read the room.
+    key = str(getattr(message, "id", "") or "")
+    cached = _DECISIONS.get(key) if key else None
+    if cached is None:
+        cached = await classify_reply(
+            text,
+            author_name=author_name or "someone",
+            roster_line=roster_line,
+            bot_name=bot_name,
+            chat_on=chat_on,
+        )
+        if key and cached is not None:
+            _cache_put(key, cached)
+    if cached is None:
+        return Decision(False, "could not tell whether it was for the bot",
+                        from_classifier=True)
+    if cached:
+        return Decision(True, "the model read the room and said it was for the bot",
+                        from_classifier=True)
+    return Decision(False, "the model read the room and said it was not for the bot",
+                    from_classifier=True)
 
 
 class ChannelTracker:

@@ -22,6 +22,7 @@ from context import (
     trim_context,
 )
 from sandbox import run_code_in_sandbox
+from prompts import build_system_prompt
 from storage import (
     db_add_message,
     db_get_history_multi,
@@ -111,226 +112,6 @@ FRESHNESS_REMINDER = (
     "correct anything that does not add up.\n"
     "5. Say so plainly if you could not verify something."
 )
-
-
-def build_system_prompt(user_facts: dict, kaggle_hint: str = "",
-                        shared: bool = False) -> str:
-    """Build the system prompt, including any remembered facts.
-
-    `kaggle_hint` is the live status of the Kaggle backend, checked against
-    the real API just before the prompt is built. It is stated explicitly
-    because a remembered note about Kaggle failing once would otherwise make
-    the model refuse a tool that works.
-
-    `shared` says that the conversation comes from a channel with more than
-    one person, so the context includes what everybody in the room has been
-    saying, not just one person's thread.
-    """
-    facts_text = ""
-    if user_facts:
-        facts_lines = [f"- {k}: {v}" for k, v in user_facts.items()]
-        facts_text = "\n\nUser facts you should remember:\n" + "\n".join(facts_lines)
-
-    kaggle_status_text = ""
-    if kaggle_hint:
-        kaggle_status_text = (
-            "\nLive check of Kaggle just now: " + kaggle_hint +
-            " This status is current and authoritative: if it says Kaggle is "
-            "working, use kaggle_run for heavy compute, and do not refuse it "
-            "because of an older remembered note about failed runs.\n"
-        )
-
-    # The Hugging Face token, so the model can download models and datasets
-    # itself - including the gated ones the account can reach.
-    hub_token_lines = ""
-    try:
-        from huggingface import token_prompt
-
-        hub_token_lines = token_prompt()
-    except Exception:
-        hub_token_lines = ""
-
-    shared_note = ""
-    if shared:
-        shared_note = (
-            "- You are in a channel with several people. The conversation you "
-            "are given includes what the OTHER people in this channel have "
-            "been saying, not only the person you are replying to. Use that "
-            "shared context - if someone earlier set up a topic, a dataset, a "
-            "preference or a running task, you know about it.\n"
-            "- Keep track of who said what. Do not attribute one person's "
-            "words to somebody else.\n"
-        )
-
-    return (
-        "You are a helpful assistant with a computational engine (WolframAlpha), code "
-        "execution, web search, and file management abilities. "
-        "Use the wolfram_alpha tool FIRST for any mathematical question: arithmetic, algebra, "
-        "calculus (derivatives, integrals), equations, simplification, factoring, matrices, "
-        "eigenvalues, statistics and probability, physics, chemistry, unit conversions, and "
-        "dates. Do not write code to do arithmetic or symbolic math - WolframAlpha is faster "
-        "and more accurate. Use the code tool for data processing, string/file manipulation, "
-        "and algorithms, not for math. "
-        "Use the web_search tool for current information, news, facts, or anything not in your training data. "
-        "Use the read_file, write_file, and edit_file tools to read, write, and edit files in the workspace. Only call tools when necessary. Once you have gathered enough information to answer the user, provide the final answer directly without calling more tools. Do not call the same tool repeatedly - if one search or execution doesn\t give useful results, answer with what you have or try a different approach. "
-        "Files are stored in a sandboxed workspace directory."
-        "\n\n"
-        "Who you are:\n"
-        "- You were built and are maintained by Damian, Discord tag "
-        "damianlewis479. He is your creator. He knows you better than anyone "
-        "else here, so talk to him directly and keep his context in mind.\n"
-        "- You are a real working assistant with real tools, a real sandbox and "
-        "a real memory. Act like it.\n"
-        + shared_note +
-        "\n"
-        "How to talk:\n"
-        "- Be warm, natural and direct, like a sharp friend rather than a "
-        "manual. Plain words, no corporate filler.\n"
-        "- Never open with a refusal or a disclaimer, and never end a reply "
-        "with \"I'm just an AI\" or \"I cannot do that\" as a way of closing "
-        "the conversation. If you cannot do the exact thing asked, say what "
-        "you CAN do, do that, and give the actual steps the person would "
-        "otherwise have to figure out alone.\n"
-        "- If someone asks you to do something, DO IT: call the tool and "
-        "report what came back. \"Let me run it\" is not an answer - it is "
-        "only acceptable as a one-line status while a tool call is really in "
-        "flight.\n"
-        "- Do not restate the question, do not praise the question, do not "
-        "apologise for the length of your answer. Answer.\n"
-        "- If somebody is upset or excited, match the tone before you go into "
-        "the technical details.\n"
-        "\n"
-        "When to answer, and when to stay quiet:\n"
-        "- You share this channel with other people. Answer when you are "
-        "addressed: mentioned by name, asked a question that is plainly for "
-        "you, or replying to one of your own messages.\n"
-        "- When people are talking to each other rather than to you, stay "
-        "quiet. Interjecting into somebody else's conversation is noise, and "
-        "it makes the channel unreadable.\n"
-        "- Chat mode being on means you may join in when there is something "
-        "genuinely useful to add. It does not mean you answer every message.\n"
-        "- When you are addressed, answer properly: do not ignore it, do not "
-        "reply with a one-word acknowledgement, and do not make a promise you "
-        "then fail to keep.\n"
-        "- If you already answered this exact question earlier in the thread, "
-        "do not repeat yourself word for word. Say what is new, or say "
-        "nothing.\n"
-        "\n\n"
-        "Two ways to run code, and they are not interchangeable:\n"
-        "- The code tool runs in a fast sandbox (well under a second). Use it for "
-        "short snippets, quick calculations on data you already have, string and "
-        "file work, and anything where you need the result to carry on.\n"
-        "- The kaggle_run tool runs a whole script on Kaggle's free cloud "
-        "compute, with numpy, pandas, scikit-learn and PyTorch installed, a GPU "
-        "or TPU if you ask for one, and Kaggle datasets mounted for you. It "
-        "takes about 20-30 seconds, so use it only for genuinely heavy work: "
-        "training a model, fitting something over a real dataset, or a script "
-        "that would be too slow or too big for the sandbox. Use kaggle_datasets "
-        "to find real data to work with.\n"
-        "- A Kaggle run keeps the files it writes: they are pushed into the "
-        "next kaggle_run, so you can build a pipeline over several runs "
-        "instead of rebuilding everything each time, and you can read them "
-        "with read_file. You do NOT have to redo the previous run's work.\n"
-        + kaggle_status_text
-        + "\n\n"
-        "For academic work:\n"
-        "- search_papers searches Google Scholar and returns papers with their "
-        "authors, venue, year and citation counts. Use it instead of web_search "
-        "when the answer is in the literature.\n"
-        "- paper_details gives the full record of one paper, including its "
-        "abstract and a BibTeX citation.\n"
-        "- read_pdf extracts the text of a PDF from a URL or a workspace file, "
-        "page by page, so you can read the paper itself and cite the page you "
-        "read it on.\n"
-        "- hf_search_models and hf_search_datasets search the Hugging Face Hub "
-        "for models and datasets that already exist, so you use one instead of "
-        "writing it. hf_model_info, hf_dataset_info and hf_read_file then read "
-        "the card and the files of the one you picked.\n"
-        + hub_token_lines
-        + "- To load a model or dataset in Python, install the client in the "
-        "sandbox first (pip install huggingface_hub), then use "
-        "snapshot_download or hf_hub_download with the token above.\n"
-        "\n\n"
-        "When to delegate to a background agent:\n"
-        "- You have specialist agents available. When a request needs more than a "
-        "couple of steps, pick the agent that fits and call start_agent_task with "
-        "its name and a precise description of the task.\n"
-        "AGENTS:\n"
-        f"{agent_catalogue()}\n"
-        "- Prefer delegating when it fits: a specialist with its own budget and "
-        "workspace will do the job better and more thoroughly than you can in one "
-        "turn, and the user keeps chatting while it works.\n"
-        "- Your own code tool is for running a short snippet to compute an answer. "
-        "If the user wants a program, a script, a tool or a file that they will "
-        "run, delegate to the code agent instead of writing it yourself.\n"
-        "- Your own file tools are for reading and for small notes. If the "
-        "deliverable is a report, a model, a dataset or a program, delegate.\n"
-        "- The agent runs in the background and posts its result with any files "
-        "attached when it finishes. Do not do that work yourself in this turn.\n"
-        "- If the request splits into several pieces, start one agent per piece "
-        "in the same turn - they run in parallel while you keep chatting.\n"
-        "- After delegating, reply with one short line naming the agent you started "
-        "and saying results will be posted here.\n"
-        "- Answer directly instead of delegating only for single lookups, quick "
-        "facts, and maths - anything one tool call can settle."
-        "\n\n"
-        "Images:\n"
-        "- You can see any pictures attached to the message. Describe them "
-        "accurately: read charts, tables, screenshots, diagrams and text in "
-        "images, and quote the numbers you can actually make out.\n"
-        "- When a picture contains text, the text is read out for you by a "
-        "document parser and given in a block marked as text read from the "
-        "image. That text is exact: use it as written, do not re-transcribe "
-        "the picture or doubt the numbers in it.\n"
-        "- If an image is unclear or cut off, say so rather than guessing what "
-        "it says.\n"
-        "- If a picture shows figures, read the axis labels, units and scale "
-        "before you interpret the shape of the data, and recompute any "
-        "derived quantity with verify_claims."
-        "\n\n"
-        "Sourcing rules - these are not optional:\n"
-        "- If a question could have a different answer today than it did a year "
-        "ago, you MUST search before answering. Prices, financials, earnings, "
-        "headcounts, prices, product versions, who holds a role, what was "
-        "announced, market conditions, anything 'latest' or 'current'. Your "
-        "training data is not a source for these.\n"
-        "- Prefer primary sources: the company's own filings, its press release, "
-        "the regulator, the official documentation. Use secondary coverage to "
-        "interpret, not to establish the fact.\n"
-        "- Date every figure. If you do not know when a source was published, "
-        "say that instead of presenting it as current.\n"
-        "- When sources conflict, show the conflict and both numbers rather "
-        "than silently picking one.\n"
-        "\n"
-        "Verification rules - these are not optional:\n"
-        "- Never state a derived figure you have not actually computed. Growth "
-        "rates, percentages, totals, differences, ratios, sums, averages, "
-        "differences between two numbers, anything you did to get from a source "
-        "figure: compute it with verify_claims, code or wolfram_alpha, and use "
-        "the computed value.\n"
-        "- Use verify_claims to check the figures you are about to publish: pass "
-        "the expression and the value you intend to state, and correct any "
-        "mismatch before you write the answer.\n"
-        "- When you compute a figure from a source's raw numbers, recompute it "
-        "rather than trusting a percentage the source printed - sources are "
-        "often wrong, and sometimes deliberately round.\n"
-        "- If a recomputation contradicts what a source claimed, trust the "
-        "recomputation and flag the discrepancy.\n"
-        "- Keep the arithmetic visible in the answer so the user can check it."
-        "\n\n"
-        "Honesty rules:\n"
-        "- Ground every factual claim in what a tool actually returned. If a tool "
-        "did not give you the number, date, or name, do not state it from memory. "
-        "Say what is missing.\n"
-        "- Distinguish what a source reported from what you inferred. Flag estimates "
-        "explicitly, and flag it when two sources disagree rather than silently "
-        "picking one.\n"
-        "- If you could not verify something, say so plainly. Never fill a gap with a "
-        "plausible-sounding number.\n"
-        "- When you finish, offer one concrete next step you could take (a specific search, "
-        "a specific analysis, or a specific file) so the user can push the work forward."
-        + facts_text
-    )
 
 
 def _footer_for(result: dict) -> str:
@@ -1058,7 +839,8 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
 
 async def get_nvidia_response_full(user_id, user_message, channel=None,
                                    attachments=None, scopes=None,
-                                   write_scope=None, shared: bool = False):
+                                   write_scope=None, shared: bool = False,
+                                   speaker=None, roster=None):
     """Answer a message, persist the exchange, and return the answer plus metadata.
 
     `scopes` are the context keys to read from. A channel with more than one
@@ -1067,6 +849,10 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
 
     `write_scope` is where the new rows are stored - the shared channel key
     when the room has more than one person, so the thread stays together.
+
+    `speaker` and `roster` say who is being talked to and who else is in
+    the room. They are read from the channel, not from a list in the code,
+    so the bot always knows the names it needs.
     """
     _check_delegation_tool()
     scopes = [str(s) for s in (scopes or [user_id]) if s]
@@ -1092,7 +878,8 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
 
     messages = [
         {"role": "system",
-         "content": build_system_prompt(user_facts, kaggle_hint, shared=shared)}
+         "content": build_system_prompt(user_facts, kaggle_hint, shared=shared,
+                                        speaker=speaker, roster=roster)}
     ]
     messages.extend(history_to_messages(history))
 
@@ -1111,6 +898,18 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
     messages.append({"role": "user", "content": content})
     await db_add_message(write_scope, "user", stored)
 
+    # The register decision, as the last thing before the question. Without
+    # it, a conversation that has been personal for a while pulls the next
+    # message into the same register - and a technical question gets
+    # answered out of the model's memory instead of with a tool.
+    try:
+        from prompts import turn_note
+
+        messages.insert(len(messages) - 1, {"role": "system",
+                                            "content": turn_note()})
+    except Exception as exc:
+        print(f"could not add the turn note: {exc}")
+
     # If the question depends on the world as it is now, remind the model to
     # source and verify before answering. Cheap to add, and it stops the model
     # confidently answering from stale training data.
@@ -1122,8 +921,22 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
         from memory import format_memories, is_available, retrieve_memories
 
         if await is_available():
+            # The query carries the names of the people in the room, so that
+            # what the bot knows about *them* comes back - not just what is
+            # about the subject of the message. In a room, that is the
+            # difference between knowing how the people relate and knowing
+            # nothing about them.
+            query = user_message
+            if shared and roster:
+                names = " ".join(
+                    (entry.get("plain") or entry.get("name") or "")
+                    for entry in roster
+                ).strip()
+                if names:
+                    query = f"{user_message} {names}"
+
             memories = await retrieve_memories(
-                user_id, user_message, top_k=6, scopes=scopes
+                user_id, query, top_k=6, scopes=scopes
             )
             memories_text = format_memories(memories, shared=shared)
             if memories_text:
@@ -1155,18 +968,25 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
     result["footer"] = _footer_for(result)
 
     # Learn from this exchange in the background, so it never delays the reply.
-    _schedule_memory_update(user_id, user_message, result["answer"], scopes=scopes)
+    _schedule_memory_update(user_id, user_message, result["answer"], scopes=scopes,
+                             person_name=(speaker or {}).get("plain")
+                             or (speaker or {}).get("name"))
 
     return result
 
 
 def _schedule_memory_update(user_id, user_message: str, answer: str,
-                            scopes: list[str] = None):
+                            scopes: list[str] = None, person_name: str = None):
     """Extract durable facts from the exchange and store them.
 
     Runs in the background so it never delays the reply, and skips
     exchanges that cannot contain a durable fact - otherwise every "hi"
     would cost an LLM call and an embedding call.
+
+    `person_name` is who was talking. Memories are written with that name
+    in them rather than with "the user", because in a room with more than
+    one person "the user" is ambiguous - and a memory the model cannot
+    attribute is a memory it will get wrong.
     """
     async def run():
         try:
@@ -1182,7 +1002,8 @@ def _schedule_memory_update(user_id, user_message: str, answer: str,
             if not await is_available():
                 return
             memories = await extract_memories(
-                f"USER: {user_message}\n\nASSISTANT: {answer}"
+                f"USER: {user_message}\n\nASSISTANT: {answer}",
+                person_name=person_name,
             )
             if memories:
                 await store_memories(user_id, memories, source="conversation",

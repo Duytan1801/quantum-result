@@ -112,7 +112,7 @@ def provider_chain() -> list[tuple[str, AsyncOpenAI, str]]:
     return chain
 
 
-def extra_body_for(provider_name: str) -> dict:
+def extra_body_for(provider_name: str, thinking: bool = True) -> dict:
     """Provider-specific request options.
 
     NVIDIA's Nemotron models can be asked to reason before they answer.
@@ -120,7 +120,19 @@ def extra_body_for(provider_name: str) -> dict:
     `enable_thinking` is rejected with "Unsupported parameter(s)". The
     reasoning comes back in its own field, so it does not end up in the
     reply. Groq does not know the flag, so it is only ever sent to NVIDIA.
+
+    `thinking=False` is for the small calls that need a direct answer - the
+    presence classifier, for instance, which has one character to say.
     """
     if provider_name == "NVIDIA":
-        return {"chat_template_kwargs": {"enable_thinking": True}}
+        return {"chat_template_kwargs": {"enable_thinking": bool(thinking)}}
     return {}
+
+
+# --- The bot's owner -------------------------------------------------------
+# The owner is the one person the bot was built for, and the one whose
+# context it keeps. Everything else about the people in the chat is worked
+# out at runtime from the channel itself - see people.py.
+OWNER_DISCORD_ID = os.getenv("OWNER_DISCORD_ID", "")
+OWNER_TAG = os.getenv("OWNER_TAG", "damianlewis479")
+OWNER_NAME = os.getenv("OWNER_NAME", "Damian")

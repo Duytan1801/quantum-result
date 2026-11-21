@@ -12,7 +12,14 @@ from agent import get_nvidia_response_full
 from discord_utils import send_long
 from agents import AGENTS, get_agent
 from jobs import cancel_job, job_label, list_jobs, start_agent_task
-from presence import ChannelTracker, channel_scope, should_answer
+from people import (
+    bot_name_variants,
+    display_name,
+    person as person_entry,
+    roster_from_messages,
+    roster_line,
+)
+from presence import ChannelTracker, channel_scope, decide
 from sandbox import run_code_in_sandbox
 from storage import (
     db_delete_fact,
@@ -52,26 +59,31 @@ BOT_MESSAGE_ID_LIMIT = 200
 # chat.
 SHARED_CHANNELS: dict[str, bool] = {}
 
+# Who is in each channel, read from the channel's own messages. Nobody is
+# listed in the code: the bot learns the room from the room.
+ROSTERS: dict[str, list] = {}
+ROSTER_TTL = 300
 
-async def _channel_people(channel_id: str, channel) -> set:
-    """Who has spoken in this channel recently?
 
-    Read from Discord itself, because the database stores the conversation
-    per person and cannot say who else was in the room.
-    """
-    people = set()
-    if channel is None:
-        return people
-    try:
-        count = 0
-        async for old in channel.history(limit=100):
-            if not old.author.bot:
-                people.add(str(old.author.id))
-            count += 1
-            if count >= 100:
-                break
-    except Exception as exc:
-        print(f"could not read the messages in {channel_id}: {exc}")
+async def _channel_roster(channel_id: str, channel=None, force: bool = False) -> list:
+    """The people in this channel, with the names they go by."""
+    cached = ROSTERS.get(str(channel_id))
+    if cached and not force:
+        return cached
+
+    people = []
+    if channel is not None:
+        try:
+            old_messages = []
+            async for old in channel.history(limit=100):
+                old_messages.append(old)
+                if len(old_messages) >= 100:
+                    break
+            people = roster_from_messages(old_messages)
+        except Exception as exc:
+            print(f"could not read the messages in {channel_id}: {exc}")
+
+    ROSTERS[str(channel_id)] = people
     return people
 
 
@@ -88,11 +100,11 @@ async def _channel_is_shared(channel_id: str, channel=None) -> bool:
         print(f"could not check whether {channel_id} is shared: {exc}")
     if not shared:
         # Otherwise ask Discord who has been talking in here.
-        people = await _channel_people(channel_id, channel)
-        if len(people) >= 2:
+        roster = await _channel_roster(channel_id, channel)
+        if len(roster) >= 2:
             shared = True
-            for person in people:
-                TRACKER.note(channel_id, person)
+            for entry in roster:
+                TRACKER.note(channel_id, entry["id"])
     if shared:
         TRACKER.mark_shared(channel_id)
     SHARED_CHANNELS[channel_id] = shared
@@ -178,6 +190,7 @@ async def attach_images(target, files: list, caption: str = None):
 @bot.command(name="ask")
 async def ask(ctx, *, question: str):
     scopes, write_scope, shared = _scopes_for(ctx.channel, ctx.author.id)
+    roster = await _channel_roster(str(ctx.channel.id), ctx.channel)
     async with ctx.typing():
         result = await get_nvidia_response_full(
             ctx.author.id,
@@ -187,6 +200,8 @@ async def ask(ctx, *, question: str):
             scopes=scopes,
             write_scope=write_scope,
             shared=shared,
+            speaker=person_entry(ctx.author),
+            roster=roster,
         )
     await send_long(ctx, result["answer"], footer=result["footer"])
     await attach_images(ctx, result.get("files") or [])
@@ -542,20 +557,31 @@ async def on_message(message):
     if not is_dm:
         await _channel_is_shared(channel_id, message.channel)
 
-    def _decide():
-        return should_answer(
+    # Who is in the room, and who is talking. Read from the channel, so the
+    # bot always has the names it needs without anybody being listed in the
+    # code.
+    roster = await _channel_roster(channel_id, message.channel)
+    speaker = person_entry(message.author)
+    bot_names = bot_name_variants(bot.user)
+
+    async def _decide():
+        return await decide(
             message,
             is_dm=is_dm,
-            participants=TRACKER.participants(channel_id),
+            shared=TRACKER.is_shared(channel_id) if not is_dm else False,
             bot_user_id=bot.user.id,
+            bot_names=bot_names,
             bot_message_ids=BOT_MESSAGE_IDS.get(channel_id),
             chat_on=chat_on,
-            shared=TRACKER.is_shared(channel_id) if not is_dm else None,
+            roster=roster,
+            author_name=speaker.get("name") or "",
+            roster_line=roster_line(roster),
+            bot_name=display_name(bot.user),
         )
 
-    answer, reason = _decide()
-    if not answer:
-        print(f"staying quiet in {channel_id}: {reason}")
+    decision = await _decide()
+    if not decision.reply:
+        print(f"staying quiet in {channel_id}: {decision.reason}")
         return
 
     content = message.content
@@ -568,10 +594,11 @@ async def on_message(message):
         # The room may have changed while this turn waited for its turn -
         # somebody else may have spoken, which makes it a shared channel. The
         # decision is taken again now, so the bot does not answer a message
-        # that was plainly meant for somebody else.
-        answer, reason = _decide()
-        if not answer:
-            print(f"staying quiet in {channel_id}: {reason}")
+        # that was plainly meant for somebody else. The classifier's answer
+        # is cached, so the second look costs nothing.
+        decision = await _decide()
+        if not decision.reply:
+            print(f"staying quiet in {channel_id}: {decision.reason}")
             return
 
         shared = TRACKER.is_shared(channel_id) if not is_dm else False
@@ -595,6 +622,8 @@ async def on_message(message):
                 scopes=scopes,
                 write_scope=write_scope,
                 shared=shared,
+                speaker=speaker,
+                roster=roster,
             )
         sent = await send_long(message, result["answer"], footer=result["footer"])
         _remember_bot_messages(channel_id, sent)
