@@ -146,8 +146,8 @@ async def classify_reply(text: str, *, author_name: str, roster_line: str,
 
     Only NVIDIA's endpoint is used here - MiniMax M3.1 Flash first, then
     Nemotron. The answer is one character, so there is nothing to be gained
-    from Groq, and a failed call should not quietly become a different
-    provider's opinion.
+    from another provider, and a failed call should not quietly become a
+    different model's opinion.
     """
     try:
         from config import (MINIMAX_MODEL, NVIDIA_MODEL, extra_body_for,

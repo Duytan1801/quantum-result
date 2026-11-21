@@ -609,7 +609,7 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
         # Keep the request inside the model's context window.
         messages = trim_context(messages)
 
-        # Try the models in order: MiniMax first, then Nemotron, then Groq.
+        # Try the models in order: MiniMax first, then Nemotron.
         # A turn with a picture in it skips MiniMax, which cannot look at
         # images, and goes to Nemotron first.
         stream = None
