@@ -310,8 +310,14 @@ def _vector_literal(vector: list[float]) -> str:
     return "[" + ",".join(f"{v:.6f}" for v in vector) + "]"
 
 
+def _norm_content(content: str) -> str:
+    """Normalise a memory so two copies of it compare equal."""
+    return " ".join(re.findall(r"\w+", (content or "").lower()))
+
+
 async def retrieve_memories(user_id: str, query: str, top_k: int = 6,
-                            min_score: float = None) -> list[dict]:
+                            min_score: float = None,
+                            scopes: list[str] = None) -> list[dict]:
     """Find the stored memories most relevant to a query.
 
     Results below the relevance floor are dropped: a memory that has nothing
@@ -320,31 +326,54 @@ async def retrieve_memories(user_id: str, query: str, top_k: int = 6,
 
     Revisions are resolved by the search function, which keeps the newer of
     two memories that are about the same thing but say different things.
+
+    `scopes` are the keys to search. A shared channel passes both the
+    person's own key and the channel's key, so the bot remembers what
+    everyone in the room has been talking about. The same memory stored
+    under two keys is returned once.
     """
+    scopes = [str(s) for s in (scopes or [user_id]) if s]
     vectors = await embed([query], input_type="query")
     if not vectors:
         return []
     from storage import supabase
 
-    result = await asyncio.to_thread(
-        _match_memories,
-        str(user_id),
-        _vector_literal(vectors[0]),
-        top_k,
-        await active_model(),
-    )
+    model = await active_model()
+    literal = _vector_literal(vectors[0])
+
+    results = []
+    for scope in scopes:
+        try:
+            found = await asyncio.to_thread(
+                _match_memories, scope, literal, top_k, model
+            )
+        except Exception as exc:
+            print(f"memory search failed for scope {scope}: {exc}")
+            continue
+        results.extend(found or [])
+
     if min_score is None:
         min_score = MIN_RELEVANCE
 
     kept = []
-    for row in result:
+    seen_content = set()
+    for row in results:
         similarity = row.get("similarity")
         if similarity is None:
             similarity = row.get("score") or 0.0
         if similarity < min_score:
             continue
+        # The same memory can live under more than one scope (a shared
+        # channel stores it under the person's key and the channel's key).
+        key = _norm_content(row.get("content"))
+        if key in seen_content:
+            continue
+        seen_content.add(key)
         row["similarity"] = similarity
         kept.append(row)
+
+    kept.sort(key=lambda r: r.get("score") or 0.0, reverse=True)
+    kept = kept[:top_k]
 
     if kept:
         _touch([r["id"] for r in kept if r.get("id")])
@@ -384,11 +413,18 @@ def _match_memories(user_id: str, embedding: str, top_k: int,
 
 
 async def store_memories(user_id: str, memories: list[dict],
-                         source: str = None) -> int:
-    """Store memories. Each is {"content": str, "kind": str}."""
+                         source: str = None,
+                         scopes: list[str] = None) -> int:
+    """Store memories. Each is {"content": str, "kind": str}.
+
+    `scopes` are the keys to write to. A shared channel passes both the
+    person's own key and the channel's key, so a fact learned in a room is
+    still known in that room even when somebody else asks about it later.
+    """
     memories = [m for m in memories if (m.get("content") or "").strip()]
     if not memories:
         return 0
+    scopes = [str(s) for s in (scopes or [user_id]) if s]
     model = await active_model()
     try:
         vectors = await embed([m["content"] for m in memories])
@@ -396,18 +432,18 @@ async def store_memories(user_id: str, memories: list[dict],
         print(f"could not embed memories: {exc}")
         return 0
 
-    rows = [
-        {
-            "user_id": str(user_id),
-            "kind": m.get("kind", "fact"),
-            "content": m["content"].strip(),
-            "embedding": vectors[i],
-            "embed_model": model,
-            "embed_dim": EMBED_DIM,
-            "source": source,
-        }
-        for i, m in enumerate(memories)
-    ]
+    rows = []
+    for scope in scopes:
+        for i, m in enumerate(memories):
+            rows.append({
+                "user_id": scope,
+                "kind": m.get("kind", "fact"),
+                "content": m["content"].strip(),
+                "embedding": vectors[i],
+                "embed_model": model,
+                "embed_dim": EMBED_DIM,
+                "source": source,
+            })
 
     from storage import supabase
 
@@ -420,8 +456,9 @@ async def store_memories(user_id: str, memories: list[dict],
         print(f"could not store memories: {exc}")
         return 0
 
-    await prune_memories(user_id)
-    return len(rows)
+    for scope in scopes:
+        await prune_memories(scope)
+    return len(memories)
 
 
 async def forget_memories(user_id: str, text: str) -> int:
@@ -565,26 +602,112 @@ async def reembed_stale_memories(user_id: str = None) -> int:
 # Extraction
 # ---------------------------------------------------------------------------
 _EXTRACT_PROMPT = (
-    "Extract the durable facts from this exchange that would be useful in a much "
-    "later conversation: specific figures, dates, names, decisions, stated "
-    "preferences, and conclusions the user or assistant settled on.\n"
+    "Extract the durable facts about the USER from this exchange that would be "
+    "useful in a much later conversation: who they are, what they are working "
+    "on, their preferences, their decisions, their plans, the numbers and dates "
+    "that concern them, and the people in their life.\n"
     "Rules:\n"
     "- Each memory is ONE self-contained sentence that makes sense on its own.\n"
     "- Include the actual number, date or name, not a vague reference.\n"
     "- If the exchange updates something stated earlier, write the NEW value.\n"
-    "- Skip anything that is just this conversation's scaffolding, and skip "
-    "speculation that was not settled.\n"
+    "- Mark every candidate with \"about_user\": true ONLY if it is a fact about "
+    "the person who is talking. Everything else must be false.\n"
+    "- Write each memory so that it is obviously about that person: start it "
+    "with \"The user\" or use their name. A sentence that names no person at "
+    "all will be thrown away.\n"    "- A fact about the world is NOT a fact about the user. General knowledge, "
+    "research findings, definitions, homework solutions, history, product facts "
+    "and statistics are all about_user: false, even when the user asked for "
+    "them and even when the answer was good.\n"
     "- NEVER store facts about whether a tool, service, API, credential, "
     "environment or network is available, working or configured (Kaggle, the "
     "sandbox, internet access, tokens). Those states change between deploys, "
     "so a remembered version goes stale and makes the assistant refuse tools "
     "that actually work. Report live status in the conversation instead.\n"
+    "- NEVER store what the assistant said about itself: what it can do, what "
+    "it refused, what it offered to do, or how it works.\n"
     "- Do not store what the assistant offered or attempted in a past "
     "conversation unless the user settled on it as a decision.\n"
     "- If there is nothing worth remembering, return an empty list.\n"
-    "Return JSON only: {\"memories\": [{\"content\": \"...\", \"kind\": \"fact\"}]}\n"
+    "Return JSON only: {\"memories\": [{\"content\": \"...\", \"kind\": \"fact\", "
+    "\"about_user\": true}]}\n"
     "where kind is one of fact, decision, finding, preference."
 )
+
+# ---------------------------------------------------------------------------
+# What must never become a memory
+# ---------------------------------------------------------------------------
+#
+# The store used to be full of the assistant's own research output: Vietnamese
+# inflation figures, marriage-law dates, proof steps. Those are facts about
+# the world, not about the user, and they crowded out the handful of real
+# facts ("the user is an applied math major") in every retrieval. Three
+# patterns are rejected outright.
+
+# The assistant describing itself: what it can do, refused, offered, said.
+# Anchored at the start of the sentence, so that "the user's model is X" is
+# not mistaken for the assistant talking about itself.
+_ASSISTANT_SELF_RE = re.compile(
+    r"^\s*(?:the\s+|this\s+|that\s+|an?\s+)?"
+    r"(?:assistant|bot|ai\s+assistant|agent|model)\s+"
+    r"(?:can|could|will|would|should|does|did|is|was|has|have|refuses?|refused|"
+    r"offered|offers?|provides?|provided|said|told|explained|listed|cited|"
+    r"answered|decided)\b",
+    re.IGNORECASE,
+)
+
+# The assistant describing what it can do, in the first person.
+_SELF_CAPABILITY_RE = re.compile(
+    r"^\s*(?:i|we)\s+(?:can|could|will|would|should|must|offered|refused|"
+    r"ran|used|called|checked|explained|suggested|recommended|listed|"
+    r"provided)\b",
+    re.IGNORECASE,
+)
+
+# The state of a tool, service or credential. These go stale between deploys.
+_TOOL_STATE_RE = re.compile(
+    r"\b(?:kaggle|sandbox|daytona|piston|api|token|credential|network|internet|"
+    r"web[_ ]?search|wolfram|supabase|hugging\s?face|hub|code\s+tool|tools?)\b"
+    r"[^.]{0,80}?"
+    r"\b(?:is|are|was|were|be|been|being|works?|working|blocked|available|"
+    r"configured|installed|reachable|usable|functional|broken|down|expired|"
+    r"valid|unavailable|cannot|can't|could\s+not|couldn't|does\s+not|doesn't)\b",
+    re.IGNORECASE,
+)
+
+# A sentence is about the user only when it names them. "The user is an
+# applied math major" qualifies; "Pao travels at 5 times the plane's speed"
+# and "For i.i.d. random variables..." do not, however useful they are.
+_USER_SIGNAL_RE = re.compile(
+    r"\b(?:the\s+user|damian|the\s+creator)\b"
+    r"|^\s*(?:i|my|me)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_about_user(candidate: dict) -> bool:
+    """Should this extracted candidate be stored as a memory about the user?"""
+    content = (candidate.get("content") or "").strip()
+    if not content:
+        return False
+    if _ASSISTANT_SELF_RE.search(content):
+        return False
+    if _SELF_CAPABILITY_RE.search(content):
+        return False
+    if _TOOL_STATE_RE.search(content):
+        return False
+
+    flag = candidate.get("about_user")
+    if isinstance(flag, bool) and not flag:
+        return False
+    if isinstance(flag, str) and flag.strip().lower() in ("false", "no", "0"):
+        return False
+
+    # Whatever the extractor said, the sentence itself has to be about a
+    # person. "The user is an applied math major" qualifies; "Vietnam's CPI
+    # was +5.09% in October 2026" does not, however confident the extractor
+    # was about it.
+    return bool(_USER_SIGNAL_RE.search(content))
+
 
 # Conversations too small to hold a durable fact. Extracting from these costs
 # an LLM call and an embedding call for nothing.
@@ -645,17 +768,23 @@ async def extract_memories(text: str) -> list[dict]:
                 continue
             data = json.loads(match.group(0))
             memories = data.get("memories") or []
-            return [
-                {"content": m["content"], "kind": m.get("kind", "fact")}
-                for m in memories
-                if isinstance(m, dict) and m.get("content")
-            ]
+            kept = []
+            for m in memories:
+                if not isinstance(m, dict) or not m.get("content"):
+                    continue
+                if not _is_about_user(m):
+                    continue
+                kept.append({
+                    "content": m["content"].strip(),
+                    "kind": m.get("kind", "fact"),
+                })
+            return kept
         except Exception:
             continue
     return []
 
 
-def format_memories(memories: list[dict]) -> str:
+def format_memories(memories: list[dict], shared: bool = False) -> str:
     """Render retrieved memories for injection into the prompt."""
     if not memories:
         return ""
@@ -667,8 +796,9 @@ def format_memories(memories: list[dict]) -> str:
             lines.append(f"- ({kind}) {content}")
     if not lines:
         return ""
+    who = ("these people" if shared else "this user")
     return (
-        "\n\nRelevant things you remember from earlier conversations with this "
-        "user (retrieved automatically - treat as established fact unless "
+        "\n\nRelevant things you remember from earlier conversations with "
+        f"{who} (retrieved automatically - treat as established fact unless "
         "contradicted by something newer):\n" + "\n".join(lines)
     )

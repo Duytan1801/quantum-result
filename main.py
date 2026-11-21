@@ -1,5 +1,6 @@
 """Discord bot entrypoint: bot setup, commands, and event handlers."""
 
+import asyncio
 import os
 
 import discord
@@ -11,11 +12,13 @@ from agent import get_nvidia_response_full
 from discord_utils import send_long
 from agents import AGENTS, get_agent
 from jobs import cancel_job, job_label, list_jobs, start_agent_task
+from presence import ChannelTracker, channel_scope, should_answer
 from sandbox import run_code_in_sandbox
 from storage import (
     db_delete_fact,
-    db_get_fact,
+    db_get_user_facts_multi,
     db_is_chat_mode_enabled,
+    db_scope_has_rows,
     db_set_chat_mode,
     db_set_fact,
 )
@@ -28,6 +31,110 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Who has spoken in each channel. A channel with two or more people in it is
+# a room, not a private conversation: the bot waits to be spoken to, and the
+# context of everybody in the room is shared.
+TRACKER = ChannelTracker()
+
+# One turn at a time per channel. Without this, two messages arriving
+# together produced two answers that landed on top of each other.
+CHANNEL_LOCKS: dict[str, asyncio.Lock] = {}
+
+# The ids of the bot's own recent messages, so a reply to one of them can be
+# recognised as being for the bot.
+BOT_MESSAGE_IDS: dict[str, set] = {}
+BOT_MESSAGE_ID_LIMIT = 200
+
+# Which channels are rooms. Kept across the life of the process, and seeded
+# from the database and the channel's own messages the first time a channel
+# is seen, so a restart does not make a busy channel look like a private
+# chat.
+SHARED_CHANNELS: dict[str, bool] = {}
+
+
+async def _channel_people(channel_id: str, channel) -> set:
+    """Who has spoken in this channel recently?
+
+    Read from Discord itself, because the database stores the conversation
+    per person and cannot say who else was in the room.
+    """
+    people = set()
+    if channel is None:
+        return people
+    try:
+        count = 0
+        async for old in channel.history(limit=100):
+            if not old.author.bot:
+                people.add(str(old.author.id))
+            count += 1
+            if count >= 100:
+                break
+    except Exception as exc:
+        print(f"could not read the messages in {channel_id}: {exc}")
+    return people
+
+
+async def _channel_is_shared(channel_id: str, channel=None) -> bool:
+    """Has this channel got more than one person in it?"""
+    if channel_id in SHARED_CHANNELS:
+        return SHARED_CHANNELS[channel_id]
+    shared = False
+    try:
+        # If the channel already has rows under its shared scope, it has been
+        # a room before - even if the tracker has been reset by a restart.
+        shared = await db_scope_has_rows(channel_scope(channel_id))
+    except Exception as exc:
+        print(f"could not check whether {channel_id} is shared: {exc}")
+    if not shared:
+        # Otherwise ask Discord who has been talking in here.
+        people = await _channel_people(channel_id, channel)
+        if len(people) >= 2:
+            shared = True
+            for person in people:
+                TRACKER.note(channel_id, person)
+    if shared:
+        TRACKER.mark_shared(channel_id)
+    SHARED_CHANNELS[channel_id] = shared
+    return shared
+
+
+def _channel_lock(channel_id: str) -> asyncio.Lock:
+    """The lock that serialises the turns in one channel."""
+    lock = CHANNEL_LOCKS.get(channel_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        CHANNEL_LOCKS[channel_id] = lock
+    return lock
+
+
+def _remember_bot_messages(channel_id: str, messages) -> None:
+    """Record the bot's own message ids, so replies to them are noticed."""
+    ids = BOT_MESSAGE_IDS.setdefault(channel_id, set())
+    for message in messages or []:
+        message_id = getattr(message, "id", None)
+        if message_id:
+            ids.add(message_id)
+    if len(ids) > BOT_MESSAGE_ID_LIMIT:
+        # Keep the most recent ones.
+        for message_id in list(ids)[:-BOT_MESSAGE_ID_LIMIT]:
+            ids.discard(message_id)
+
+
+def _scopes_for(channel, user_id) -> tuple[list, str, bool]:
+    """The context keys for one person in one channel.
+
+    In a room the conversation and the memory are shared, so the channel's
+    scope is read as well as the person's own, and new rows are written to
+    the channel's scope.
+    """
+    scopes = [str(user_id)]
+    scope = TRACKER.scope_for(getattr(channel, "id", None))
+    if not scope:
+        return scopes, str(user_id), False
+    scopes.append(scope)
+    return scopes, scope, True
+
 
 
 # ---------------------------------------------------------------------------
@@ -70,12 +177,16 @@ async def attach_images(target, files: list, caption: str = None):
 
 @bot.command(name="ask")
 async def ask(ctx, *, question: str):
+    scopes, write_scope, shared = _scopes_for(ctx.channel, ctx.author.id)
     async with ctx.typing():
         result = await get_nvidia_response_full(
             ctx.author.id,
             question,
             ctx.channel,
             attachments=ctx.message.attachments,
+            scopes=scopes,
+            write_scope=write_scope,
+            shared=shared,
         )
     await send_long(ctx, result["answer"], footer=result["footer"])
     await attach_images(ctx, result.get("files") or [])
@@ -151,26 +262,43 @@ async def cancel_job_cmd(ctx, job_id: str):
 @bot.command(name="remember")
 async def remember(ctx, key: str, *, value: str):
     await db_set_fact(ctx.author.id, key, value)
+    # In a room, everybody should know the fact - so it is stored against
+    # the channel as well as against the person who said it.
+    scope = TRACKER.scope_for(ctx.channel.id)
+    if scope:
+        await db_set_fact(scope, key, value)
     await ctx.send(f"Remembered: {key} = {value}")
 
 
 @bot.command(name="recall")
 async def recall(ctx, key: str):
-    val = await db_get_fact(ctx.author.id, key)
+    scopes = [str(ctx.author.id)]
+    scope = TRACKER.scope_for(ctx.channel.id)
+    if scope:
+        scopes.append(scope)
+    facts = await db_get_user_facts_multi(scopes)
+    val = facts.get(key)
     await ctx.send(f"{key}: {val}" if val else "I don't remember that.")
 
 
 @bot.command(name="forget")
 async def forget(ctx, key: str):
     """Forget a stored fact, and any long-term memory that mentions it."""
-    await db_delete_fact(ctx.author.id, key)
+    scopes = [str(ctx.author.id)]
+    scope = TRACKER.scope_for(ctx.channel.id)
+    if scope:
+        scopes.append(scope)
+
+    for scope_key in scopes:
+        await db_delete_fact(scope_key, key)
 
     forgotten = 0
     try:
         from memory import forget_memories, is_available
 
         if await is_available():
-            forgotten = await forget_memories(ctx.author.id, key)
+            for scope_key in scopes:
+                forgotten += await forget_memories(scope_key, key)
     except Exception as exc:
         print(f"could not forget semantic memories: {exc}")
 
@@ -243,8 +371,9 @@ async def chatmode(ctx, action: str):
     await db_set_chat_mode(str(ctx.channel.id), enabled)
     status = "enabled" if enabled else "disabled"
     await ctx.send(
-        f"Chat mode {status} for this channel. The bot will now respond to all messages"
-        f"{' (no mention needed)' if enabled else ''}."
+        f"Chat mode {status} for this channel. The bot will now join in when "
+        f"there is something useful to add - a request, or a question about "
+        f"something it is good at - instead of answering every message."
     )
 
 
@@ -381,6 +510,13 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    channel_id = str(message.channel.id)
+
+    # Remember that this person is in this channel. It is done for every
+    # message, including the ones the bot stays quiet for, because that is
+    # what tells a one-to-one channel apart from a room.
+    TRACKER.note(channel_id, message.author.id)
+
     # A prefix command (e.g. "!ask ...") is handled by process_commands.
     # Don't also feed it to the chat handler, or it would run twice.
     is_command = False
@@ -394,7 +530,7 @@ async def on_message(message):
         return
 
     try:
-        chat_on = await db_is_chat_mode_enabled(str(message.channel.id))
+        chat_on = await db_is_chat_mode_enabled(channel_id)
     except Exception as exc:
         print(f"chat mode lookup failed: {exc}")
         chat_on = False
@@ -402,25 +538,74 @@ async def on_message(message):
     mentioned = bot.user.mentioned_in(message)
     is_dm = isinstance(message.channel, discord.DMChannel)
 
-    if chat_on or mentioned or is_dm:
-        content = message.content
-        if mentioned:
-            content = content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
-        if not content:
-            content = "Hello!"
+    # A channel that has other people in it is a room, not a private chat.
+    if not is_dm:
+        await _channel_is_shared(channel_id, message.channel)
+
+    def _decide():
+        return should_answer(
+            message,
+            is_dm=is_dm,
+            participants=TRACKER.participants(channel_id),
+            bot_user_id=bot.user.id,
+            bot_message_ids=BOT_MESSAGE_IDS.get(channel_id),
+            chat_on=chat_on,
+            shared=TRACKER.is_shared(channel_id) if not is_dm else None,
+        )
+
+    answer, reason = _decide()
+    if not answer:
+        print(f"staying quiet in {channel_id}: {reason}")
+        return
+
+    content = message.content
+    if mentioned:
+        content = content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
+    if not content:
+        content = "Hello!"
+
+    async with _channel_lock(channel_id):
+        # The room may have changed while this turn waited for its turn -
+        # somebody else may have spoken, which makes it a shared channel. The
+        # decision is taken again now, so the bot does not answer a message
+        # that was plainly meant for somebody else.
+        answer, reason = _decide()
+        if not answer:
+            print(f"staying quiet in {channel_id}: {reason}")
+            return
+
+        shared = TRACKER.is_shared(channel_id) if not is_dm else False
+        scopes = [str(message.author.id)]
+        write_scope = str(message.author.id)
+        if shared:
+            # A room: everybody's messages belong to the same thread, and the
+            # long-term memory is shared too.
+            scope = channel_scope(channel_id)
+            scopes.append(scope)
+            write_scope = scope
+            SHARED_CHANNELS[channel_id] = True
+            TRACKER.mark_shared(channel_id)
+
         async with message.channel.typing():
             result = await get_nvidia_response_full(
                 message.author.id,
                 content,
                 message.channel,
                 attachments=message.attachments,
+                scopes=scopes,
+                write_scope=write_scope,
+                shared=shared,
             )
-        await send_long(message, result["answer"], footer=result["footer"])
+        sent = await send_long(message, result["answer"], footer=result["footer"])
+        _remember_bot_messages(channel_id, sent)
         await attach_images(message, result.get("files") or [])
 
 
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
-keep_alive()
-bot.run(os.environ["DISCORD_TOKEN"])
+# Guarded, so that the module can be imported by a test without the bot
+# trying to log in.
+if __name__ == "__main__":
+    keep_alive()
+    bot.run(os.environ["DISCORD_TOKEN"])

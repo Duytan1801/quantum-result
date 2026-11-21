@@ -8,6 +8,9 @@ thread. That logic lives here so the agent loop stays readable.
 """
 
 import hashlib
+import re
+from collections import Counter
+from difflib import SequenceMatcher
 
 from config import (
     CONTEXT_CHAR_BUDGET,
@@ -15,6 +18,196 @@ from config import (
     extra_body_for,
     provider_chain,
 )
+
+
+# --- History sanitising ----------------------------------------------------
+#
+# The stored conversation is not automatically good input. A bug once made the
+# bot write forty-eight near-identical assistant rows in a row ("You're right -
+# I keep talking instead of executing..."), and every later turn was fed that
+# wall: the model pattern-matched it and answered "Hi" with the same sentence.
+#
+# Two shapes of damage are cleaned here:
+#
+#   * assistant rows with no text at all (the tool-calling turns used to
+#     store an empty preamble), and
+#   * assistant rows that repeat an earlier answer almost word for word.
+#
+# Only assistant rows without tool calls are touched. An assistant row that
+# carries tool calls has tool results hanging off it, so removing it would
+# break the request.
+
+# How alike two answers have to be before one is treated as a copy.
+_DUPLICATE_RATIO = 0.65
+# The same words in a different order, or the same sentence with more words
+# around it. "I apologize for the delay - let me run the complete pipeline"
+# and "I apologize for the delay - I need to actually run the complete
+# pipeline in one script" are the same sentence twice, and the character
+# ratio does not see it (it sits at 0.56).
+_DUPLICATE_CONTAINMENT = 0.75
+# Answers shorter than this are too short to judge (and usually are just
+# "Sure!" or "Done.").
+_DUPLICATE_MIN_CHARS = 40
+# A group needs at least this many members before the copies are removed, so
+# that two similar-but-separate answers are both kept.
+_DUPLICATE_GROUP = 3
+
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+# Words that say nothing about what a sentence is about. They are left out
+# of the word-overlap measure, so that two sentences that merely share "the"
+# and "of" are not mistaken for the same sentence.
+_STOP_WORDS = frozenset("""
+a an the and or but of in on at to for from by with as is are was were be been
+being it its this that these those i you he she they we my your his her their
+our me him them us do does did done has have had will would shall should can
+could may might must not no so if then than there here what which who whom
+""".split())
+
+
+def _norm_text(text: str) -> str:
+    """Normalise an answer so that wording differences do not hide a repeat."""
+    return " ".join(_WORD_RE.findall((text or "").lower()))
+
+
+def _content_tokens(text: str) -> set:
+    """The words in an answer that carry the meaning."""
+    return {w for w in text.split() if w not in _STOP_WORDS}
+
+
+def _similarity(a: str, b: str) -> float:
+    """How alike two normalised answers are.
+
+    1.0 is the point at which one of them counts as a copy of the other.
+    """
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 2.0
+    sequence = SequenceMatcher(None, a, b).ratio() / _DUPLICATE_RATIO
+    tokens_a, tokens_b = _content_tokens(a), _content_tokens(b)
+    containment = 0.0
+    if tokens_a and tokens_b:
+        shared = len(tokens_a & tokens_b) / min(len(tokens_a), len(tokens_b))
+        containment = shared / _DUPLICATE_CONTAINMENT
+    return max(sequence, containment)
+
+
+def _ratio(a: str, b: str) -> float:
+    """How similar two normalised answers are, from 0 to 1."""
+    return _similarity(a, b) * _DUPLICATE_RATIO
+
+
+def _is_empty_assistant(row: dict) -> bool:
+    """An assistant row with neither text nor tool calls carries nothing."""
+    return (
+        row.get("role") == "assistant"
+        and not (row.get("content") or "").strip()
+        and not row.get("tool_calls")
+    )
+
+
+def sanitize_history(history: list) -> list:
+    """Remove the poisoned rows from a stored conversation window.
+
+    Returns a new list; the rows that survive keep their original fields.
+    Dropped rows are gone entirely (rather than kept with an empty body),
+    because an empty assistant turn is exactly what teaches the model to
+    answer with nothing.
+
+    Two kinds of damage are cleaned:
+
+      * assistant rows with no text at all (the tool-calling turns used to
+        store an empty preamble), and
+      * assistant rows that repeat an earlier answer almost word for word.
+
+    An assistant row that carries tool calls cannot be removed - a tool
+    result hangs off it - but its text can be blanked, and that is where the
+    worst of the repetition lived: the model said "I don't have persistent
+    state between runs" before every single tool call, eleven times in a
+    row, and the next turn copied the habit.
+    """
+    if not history:
+        return []
+
+    rows = [r for r in history if not _is_empty_assistant(r)]
+    if not rows:
+        return []
+
+    # An answer that is repeated verbatim three or more times anywhere in the
+    # window is spam, not a conversation.
+    exact_counts = Counter(
+        _norm_text(r.get("content"))
+        for r in rows
+        if r.get("role") == "assistant" and r.get("content")
+    )
+    seen_exact: Counter = Counter()
+
+    out = []
+    turn = 0
+    # The answers given in this turn, grouped. A group is a set of answers
+    # that say the same thing; the first two are kept and the rest are
+    # dropped. Similarity is not transitive - one sentence can be halfway
+    # between two others - so the groups are grown by chaining.
+    turn_groups: list[dict] = []
+    # The preambles already said in this turn.
+    turn_preambles: list[str] = []
+
+    for row in rows:
+        role = row.get("role")
+        if role == "user":
+            turn += 1
+            turn_groups = []
+            turn_preambles = []
+
+        if role == "assistant" and row.get("content"):
+            text = row.get("content") or ""
+            norm = _norm_text(text)
+            has_tools = bool(row.get("tool_calls"))
+
+            # A verbatim repeat, seen three or more times in the window.
+            if exact_counts[norm] >= _DUPLICATE_GROUP:
+                seen_exact[norm] += 1
+                if seen_exact[norm] > 1:
+                    if has_tools:
+                        # The tool calls have to stay; the repetition does
+                        # not.
+                        row = dict(row)
+                        row["content"] = ""
+                    else:
+                        continue
+
+            # A preamble that has already been said in this turn.
+            if has_tools and len(norm) >= _DUPLICATE_MIN_CHARS:
+                if any(_similarity(norm, other) >= 1.0
+                       for other in turn_preambles):
+                    row = dict(row)
+                    row["content"] = ""
+                else:
+                    turn_preambles.append(norm)
+            elif not has_tools and len(norm) >= _DUPLICATE_MIN_CHARS:
+                # Which group does this answer belong to? The closest group
+                # wins, and the groups are chained: an answer that matches
+                # any member of a group joins it.
+                best_group = None
+                best_score = 0.0
+                for group in turn_groups:
+                    score = max(_similarity(norm, member) for member in group["members"])
+                    if score > best_score:
+                        best_score = score
+                        best_group = group
+                if best_group is not None and best_score >= 1.0:
+                    if best_group["kept"] >= _DUPLICATE_GROUP - 1:
+                        # This is the third copy of the same answer.
+                        continue
+                    best_group["kept"] += 1
+                    best_group["members"].append(norm)
+                else:
+                    turn_groups.append({"members": [norm], "kept": 1})
+
+        out.append(row)
+
+    return out
 
 
 def history_to_messages(history: list) -> list:

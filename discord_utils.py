@@ -74,9 +74,13 @@ async def send_long(target, content: str, code_block: bool = False, footer: str 
     Unless `code_block` is set, LaTeX math is rendered: display equations
     become images attached next to the text they belong to, and inline maths
     becomes Unicode.
+
+    Returns the list of messages that were sent, so the caller can remember
+    that they were the bot's own (a reply to one of them is for the bot).
     """
     import discord
 
+    sent = []
     render_dir = None
     parts = [("text", content)]
     if render_math and not code_block:
@@ -148,21 +152,24 @@ async def send_long(target, content: str, code_block: bool = False, footer: str 
 
             try:
                 if first and hasattr(target, "reply"):
-                    await target.reply(value)
+                    sent.append(await target.reply(value))
                 else:
-                    await _send(target, value)
+                    sent.append(await _send(target, value))
             except Exception as exc:
                 # One message that Discord will not accept must not cost the
                 # user the rest of the answer.
                 print(f"could not send a message part: {exc}")
                 try:
-                    await _send(target, f"⚠️ A part of this reply failed to send: {exc}")
+                    sent.append(await _send(
+                        target, f"⚠️ A part of this reply failed to send: {exc}"))
                 except Exception:
                     pass
             first = False
     finally:
         if render_dir:
             shutil.rmtree(render_dir, ignore_errors=True)
+
+    return sent
 
 
 async def _send(target, content=None, **kwargs):

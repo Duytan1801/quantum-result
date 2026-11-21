@@ -9,7 +9,9 @@ finishes.
 import asyncio
 import json
 import os
+import re
 import time
+from difflib import SequenceMatcher
 
 import discord
 
@@ -23,6 +25,14 @@ from tools import written_files
 JOBS: dict[str, dict] = {}
 _job_counter = 0
 _job_lock = asyncio.Lock()
+
+# How many background jobs may run at the same time. Each one drives a full
+# agent loop with its own tool budget, so a pile of them at once starves the
+# interactive replies.
+MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "2"))
+
+# Two topics that are this alike are the same task.
+_SAME_TOPIC_RATIO = 0.85
 
 JOB_STATE_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "bot_files", ".jobs.json"
@@ -99,14 +109,17 @@ _SUMMARY_LIMIT = 3000
 
 
 async def record_job_result(user_id, topic: str, agent_name: str, summary: str,
-                             files: list[str]):
-    """Store an agent's outcome in the user's conversation history.
+                             files: list[str], scopes: list[str] = None):
+    """Store an agent's outcome in the conversation history.
 
     The agent runs detached from the conversation, so without this the main
     model has no idea the work happened - it will happily contradict its own
     report on the next question.
+
+    In a room the result is stored against the channel as well, so the other
+    people there know about it too.
     """
-    if not user_id:
+    if not user_id and not scopes:
         return
     try:
         file_names = ", ".join(os.path.basename(p) for p in files) or "none"
@@ -116,7 +129,9 @@ async def record_job_result(user_id, topic: str, agent_name: str, summary: str,
             f"Files produced: {file_names}\n\n"
             f"Findings:\n{summary[:_SUMMARY_LIMIT]}"
         )
-        await db_add_message(user_id, "assistant", body)
+        for scope in (scopes or [user_id]):
+            if scope:
+                await db_add_message(scope, "assistant", body)
     except Exception:
         pass
 
@@ -212,7 +227,21 @@ async def _run_job(job_id: str, channel, user_id: str, topic: str, agent_name: s
         # Record the outcome in the user's conversation history, so the main
         # model knows the agent ran and what it found. Without this the bot
         # forgets its own report and contradicts it on the next question.
-        await record_job_result(user_id, topic, agent_name, summary, files)
+        scopes = []
+        if user_id:
+            scopes.append(user_id)
+        if channel is not None:
+            try:
+                from presence import channel_scope
+                from storage import db_scope_has_rows
+
+                scope = channel_scope(channel.id)
+                if await db_scope_has_rows(scope):
+                    scopes.append(scope)
+            except Exception:
+                pass
+        await record_job_result(user_id, topic, agent_name, summary, files,
+                                scopes=scopes)
 
         for path in files:
             try:
@@ -235,6 +264,25 @@ async def _run_job(job_id: str, channel, user_id: str, topic: str, agent_name: s
         written_files.reset(token)
 
 
+def _running_jobs() -> list[dict]:
+    """The jobs that are running right now."""
+    return [job for job in JOBS.values() if job.get("status") == "running"]
+
+
+def _topic_key(topic: str) -> str:
+    return " ".join(re.findall(r"\w+", (topic or "").lower()))
+
+
+def _same_topic(a: str, b: str) -> bool:
+    """Are these two topics the same task?"""
+    key_a, key_b = _topic_key(a), _topic_key(b)
+    if not key_a or not key_b:
+        return False
+    if key_a == key_b:
+        return True
+    return SequenceMatcher(None, key_a, key_b).ratio() >= _SAME_TOPIC_RATIO
+
+
 async def start_agent_task(agent_name: str, topic: str, channel=None,
                             user_id=None) -> str:
     """Start a background agent task and return a short status line.
@@ -248,6 +296,28 @@ async def start_agent_task(agent_name: str, topic: str, channel=None,
     spec = get_agent(agent_name)
     if spec is None:
         return f"Error: unknown agent '{agent_name}'. Available: {', '.join(AGENTS)}."
+
+    # Two jobs doing the same work at once is wasted compute and a doubled
+    # answer in the channel. One is already running: point at it instead.
+    for job in _running_jobs():
+        if job.get("agent") == agent_name and _same_topic(job.get("topic", ""), topic):
+            return (
+                f"Job {job_label(job['id'])} is already running this exact task "
+                f"({fit_discord(job.get('topic', ''), 160)}). It was NOT started "
+                f"again - a second copy would only repeat the work and post a "
+                f"duplicate answer. Tell the user it is already running and "
+                f"that the result will appear in this channel."
+            )
+
+    running = _running_jobs()
+    if len(running) >= MAX_CONCURRENT_JOBS:
+        return (
+            f"There are already {len(running)} background jobs running and the "
+            f"limit is {MAX_CONCURRENT_JOBS}. The new task was NOT started, "
+            f"because running it now would slow down the jobs already in "
+            f"flight. Tell the user to wait for one of them to finish, then "
+            f"start it again."
+        )
 
     job_id = await next_job_id()
     JOBS[job_id] = {

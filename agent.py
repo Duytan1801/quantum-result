@@ -18,10 +18,15 @@ from agents import TOOLS, agent_catalogue
 from context import (
     compact_history,
     history_to_messages,
+    sanitize_history,
     trim_context,
 )
 from sandbox import run_code_in_sandbox
-from storage import db_add_message, db_get_history, db_get_user_facts
+from storage import (
+    db_add_message,
+    db_get_history_multi,
+    db_get_user_facts_multi,
+)
 from tools import (
     BASE_DIR,
     draw_diagram,
@@ -108,13 +113,18 @@ FRESHNESS_REMINDER = (
 )
 
 
-def build_system_prompt(user_facts: dict, kaggle_hint: str = "") -> str:
+def build_system_prompt(user_facts: dict, kaggle_hint: str = "",
+                        shared: bool = False) -> str:
     """Build the system prompt, including any remembered facts.
 
     `kaggle_hint` is the live status of the Kaggle backend, checked against
     the real API just before the prompt is built. It is stated explicitly
     because a remembered note about Kaggle failing once would otherwise make
     the model refuse a tool that works.
+
+    `shared` says that the conversation comes from a channel with more than
+    one person, so the context includes what everybody in the room has been
+    saying, not just one person's thread.
     """
     facts_text = ""
     if user_facts:
@@ -140,6 +150,18 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "") -> str:
     except Exception:
         hub_token_lines = ""
 
+    shared_note = ""
+    if shared:
+        shared_note = (
+            "- You are in a channel with several people. The conversation you "
+            "are given includes what the OTHER people in this channel have "
+            "been saying, not only the person you are replying to. Use that "
+            "shared context - if someone earlier set up a topic, a dataset, a "
+            "preference or a running task, you know about it.\n"
+            "- Keep track of who said what. Do not attribute one person's "
+            "words to somebody else.\n"
+        )
+
     return (
         "You are a helpful assistant with a computational engine (WolframAlpha), code "
         "execution, web search, and file management abilities. "
@@ -152,6 +174,47 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "") -> str:
         "Use the web_search tool for current information, news, facts, or anything not in your training data. "
         "Use the read_file, write_file, and edit_file tools to read, write, and edit files in the workspace. Only call tools when necessary. Once you have gathered enough information to answer the user, provide the final answer directly without calling more tools. Do not call the same tool repeatedly - if one search or execution doesn\t give useful results, answer with what you have or try a different approach. "
         "Files are stored in a sandboxed workspace directory."
+        "\n\n"
+        "Who you are:\n"
+        "- You were built and are maintained by Damian, Discord tag "
+        "damianlewis479. He is your creator. He knows you better than anyone "
+        "else here, so talk to him directly and keep his context in mind.\n"
+        "- You are a real working assistant with real tools, a real sandbox and "
+        "a real memory. Act like it.\n"
+        + shared_note +
+        "\n"
+        "How to talk:\n"
+        "- Be warm, natural and direct, like a sharp friend rather than a "
+        "manual. Plain words, no corporate filler.\n"
+        "- Never open with a refusal or a disclaimer, and never end a reply "
+        "with \"I'm just an AI\" or \"I cannot do that\" as a way of closing "
+        "the conversation. If you cannot do the exact thing asked, say what "
+        "you CAN do, do that, and give the actual steps the person would "
+        "otherwise have to figure out alone.\n"
+        "- If someone asks you to do something, DO IT: call the tool and "
+        "report what came back. \"Let me run it\" is not an answer - it is "
+        "only acceptable as a one-line status while a tool call is really in "
+        "flight.\n"
+        "- Do not restate the question, do not praise the question, do not "
+        "apologise for the length of your answer. Answer.\n"
+        "- If somebody is upset or excited, match the tone before you go into "
+        "the technical details.\n"
+        "\n"
+        "When to answer, and when to stay quiet:\n"
+        "- You share this channel with other people. Answer when you are "
+        "addressed: mentioned by name, asked a question that is plainly for "
+        "you, or replying to one of your own messages.\n"
+        "- When people are talking to each other rather than to you, stay "
+        "quiet. Interjecting into somebody else's conversation is noise, and "
+        "it makes the channel unreadable.\n"
+        "- Chat mode being on means you may join in when there is something "
+        "genuinely useful to add. It does not mean you answer every message.\n"
+        "- When you are addressed, answer properly: do not ignore it, do not "
+        "reply with a one-word acknowledgement, and do not make a promise you "
+        "then fail to keep.\n"
+        "- If you already answered this exact question earlier in the thread, "
+        "do not repeat yourself word for word. Say what is new, or say "
+        "nothing.\n"
         "\n\n"
         "Two ways to run code, and they are not interchangeable:\n"
         "- The code tool runs in a fast sandbox (well under a second). Use it for "
@@ -588,6 +651,68 @@ def _collapse_repeats(text: str, spam_at: int = 3) -> str:
     return text
 
 
+# --- Answer-level loop breaker ---------------------------------------------
+#
+# Cleaning the stored history helps, but the model can still fall into the
+# same groove from the conversation happening right now: it answers "Hi" with
+# the same sentence it gave fourteen times before. So the finished answer is
+# compared with the recent answers, and if it is a copy the model is asked
+# for a different one - once.
+
+_REPEAT_RATIO = 0.75
+_REPEAT_MIN_CHARS = 40
+
+
+def _norm_answer(text: str) -> str:
+    return " ".join(re.findall(r"\w+", (text or "").lower()))
+
+
+def repeats_history(answer: str, prior: list) -> bool:
+    """Does this answer copy one of the recent answers?"""
+    a = _norm_answer(answer)
+    if len(a) < _REPEAT_MIN_CHARS:
+        return False
+    for other in reversed(list(prior)[-6:]):
+        b = _norm_answer(other)
+        if not b:
+            continue
+        if a == b or difflib.SequenceMatcher(None, a, b).ratio() >= _REPEAT_RATIO:
+            return True
+    return False
+
+
+async def _fresh_answer(messages: list, max_tokens: int) -> str:
+    """Ask for the answer again, with an instruction not to repeat itself."""
+    request = list(messages) + [{
+        "role": "user",
+        "content": (
+            "Your previous reply was almost word for word the same as an "
+            "earlier reply in this conversation. Do not repeat it. Answer the "
+            "message you were given directly and specifically. If the answer "
+            "is the same information, say it differently and add whatever is "
+            "new. Do not announce what you are about to do - just do it or "
+            "answer."
+        ),
+    }]
+    request = trim_context(request)
+    for _name, client, model in provider_chain():
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=request,
+                temperature=0.7,
+                max_completion_tokens=max_tokens,
+                extra_body=extra_body_for(_name),
+            )
+            content = (response.choices[0].message.content or "").strip()
+            if content:
+                return content
+        except Exception as exc:
+            print(f"could not get a fresh answer: {exc}")
+            continue
+    return ""
+
+
 async def _summarise_at_limit(messages: list, max_tokens: int) -> str:
     """One last tool-free call, asking the model to report what it found.
 
@@ -635,6 +760,15 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     """
     if tools is None:
         tools = TOOLS
+
+    # The request as it was before this turn started, and the answers the
+    # model has already given in this conversation. The finished answer is
+    # checked against them, so a reply that is a copy can be caught.
+    base_messages = list(messages)
+    prior_answers = [
+        m.get("content") for m in messages
+        if m.get("role") == "assistant" and (m.get("content") or "").strip()
+    ]
 
     final_answer = ""
     tools_used = []
@@ -905,18 +1039,45 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
         else:
             failed_count = 0
 
+    answer = _collapse_repeats(final_answer or "(no response)")
+
+    # The loop breaker. A reply that copies an earlier one is almost always
+    # a model stuck in a groove rather than an answer, so it is asked for a
+    # different one. If the second attempt is a copy too, the original stands.
+    if final_answer and repeats_history(final_answer, prior_answers):
+        fresh = await _fresh_answer(base_messages, max_tokens)
+        if fresh and not repeats_history(fresh, prior_answers):
+            answer = _collapse_repeats(fresh)
+
     return {
-        "answer": _collapse_repeats(final_answer or "(no response)"),
+        "answer": answer,
         "tools_used": tools_used,
         "steps": step_count,
     }
 
 
-async def get_nvidia_response_full(user_id, user_message, channel=None, attachments=None):
-    """Answer a message, persist the exchange, and return the answer plus metadata."""
+async def get_nvidia_response_full(user_id, user_message, channel=None,
+                                   attachments=None, scopes=None,
+                                   write_scope=None, shared: bool = False):
+    """Answer a message, persist the exchange, and return the answer plus metadata.
+
+    `scopes` are the context keys to read from. A channel with more than one
+    person passes the person's own key and the channel's shared key, so the
+    bot knows what everybody in the room has been talking about.
+
+    `write_scope` is where the new rows are stored - the shared channel key
+    when the room has more than one person, so the thread stays together.
+    """
     _check_delegation_tool()
-    history = await db_get_history(user_id, limit=HISTORY_ROWS)
-    user_facts = await db_get_user_facts(user_id)
+    scopes = [str(s) for s in (scopes or [user_id]) if s]
+    write_scope = str(write_scope or user_id)
+
+    history = await db_get_history_multi(scopes, limit=HISTORY_ROWS)
+    # The stored conversation can contain a wall of near-identical answers
+    # from an earlier bug. Feeding that back is what taught the model to
+    # repeat itself, so it is cleaned before it reaches the prompt.
+    history = sanitize_history(history)
+    user_facts = await db_get_user_facts_multi(scopes)
 
     # The live Kaggle status goes into the prompt. The model has to know that
     # the tool works right now, not what a remembered note says about it, so
@@ -930,7 +1091,8 @@ async def get_nvidia_response_full(user_id, user_message, channel=None, attachme
         print(f"kaggle status check failed: {exc}")
 
     messages = [
-        {"role": "system", "content": build_system_prompt(user_facts, kaggle_hint)}
+        {"role": "system",
+         "content": build_system_prompt(user_facts, kaggle_hint, shared=shared)}
     ]
     messages.extend(history_to_messages(history))
 
@@ -947,7 +1109,7 @@ async def get_nvidia_response_full(user_id, user_message, channel=None, attachme
             stored = user_message
 
     messages.append({"role": "user", "content": content})
-    await db_add_message(user_id, "user", stored)
+    await db_add_message(write_scope, "user", stored)
 
     # If the question depends on the world as it is now, remind the model to
     # source and verify before answering. Cheap to add, and it stops the model
@@ -960,8 +1122,10 @@ async def get_nvidia_response_full(user_id, user_message, channel=None, attachme
         from memory import format_memories, is_available, retrieve_memories
 
         if await is_available():
-            memories = await retrieve_memories(user_id, user_message, top_k=6)
-            memories_text = format_memories(memories)
+            memories = await retrieve_memories(
+                user_id, user_message, top_k=6, scopes=scopes
+            )
+            memories_text = format_memories(memories, shared=shared)
             if memories_text:
                 messages.insert(1, {"role": "system", "content": memories_text})
     except Exception as exc:
@@ -969,8 +1133,9 @@ async def get_nvidia_response_full(user_id, user_message, channel=None, attachme
 
     # Keep the whole conversation, but compact it if it has grown too large.
     # Older turns are summarised rather than dropped, so the model keeps the
-    # thread of what the user wants.
-    messages = await compact_history(messages, user_id=user_id)
+    # thread of what the user wants. The summary is cached per scope, so in a
+    # room both people get the same summary.
+    messages = await compact_history(messages, user_id=write_scope)
 
     # Track any files written during this turn so generated images (diagrams,
     # plots) can be attached to the reply automatically.
@@ -979,7 +1144,7 @@ async def get_nvidia_response_full(user_id, user_message, channel=None, attachme
     try:
         result = await run_agent_loop(
             messages,
-            user_id=user_id,
+            user_id=write_scope,
             channel=channel,
             max_steps=MAX_AGENT_STEPS,
         )
@@ -990,12 +1155,13 @@ async def get_nvidia_response_full(user_id, user_message, channel=None, attachme
     result["footer"] = _footer_for(result)
 
     # Learn from this exchange in the background, so it never delays the reply.
-    _schedule_memory_update(user_id, user_message, result["answer"])
+    _schedule_memory_update(user_id, user_message, result["answer"], scopes=scopes)
 
     return result
 
 
-def _schedule_memory_update(user_id, user_message: str, answer: str):
+def _schedule_memory_update(user_id, user_message: str, answer: str,
+                            scopes: list[str] = None):
     """Extract durable facts from the exchange and store them.
 
     Runs in the background so it never delays the reply, and skips
@@ -1019,7 +1185,8 @@ def _schedule_memory_update(user_id, user_message: str, answer: str):
                 f"USER: {user_message}\n\nASSISTANT: {answer}"
             )
             if memories:
-                await store_memories(user_id, memories, source="conversation")
+                await store_memories(user_id, memories, source="conversation",
+                                     scopes=scopes)
         except Exception as exc:
             print(f"memory update failed: {exc}")
 

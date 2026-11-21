@@ -74,6 +74,46 @@ async def db_get_history(user_id, limit=HISTORY_ROWS):
     return list(reversed(rows))
 
 
+async def db_get_history_multi(user_ids, limit=HISTORY_ROWS):
+    """Fetch the most recent conversation rows across several scopes.
+
+    A channel with more than one person uses two scopes: the person's own
+    rows and the channel's shared rows. They are merged and sorted by time,
+    so the bot reads one continuous thread rather than two half-histories.
+    """
+    ids = [str(u) for u in (user_ids or []) if u is not None]
+    if not ids:
+        return []
+    if len(ids) == 1:
+        return await db_get_history(ids[0], limit)
+
+    def _fetch():
+        try:
+            resp = (
+                supabase.table("conversation_history")
+                .select("role, content, tool_calls, tool_call_id, name, created_at")
+                .in_("user_id", ids)
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+        except Exception as e:
+            if "42703" in str(e) or "column" in str(e).lower():
+                resp = (
+                    supabase.table("conversation_history")
+                    .select("role, content, created_at")
+                    .in_("user_id", ids)
+                    .order("created_at", desc=True)
+                    .limit(limit)
+                    .execute()
+                )
+            else:
+                raise
+        return resp.data or []
+    rows = await asyncio.to_thread(_fetch)
+    return list(reversed(rows))
+
+
 async def db_get_user_facts(user_id):
     """All remembered facts for a user, as a dict of key -> value."""
     def _fetch():
@@ -82,6 +122,54 @@ async def db_get_user_facts(user_id):
                 supabase.table("user_facts")
                 .select("fact_key, fact_value")
                 .eq("user_id", str(user_id))
+                .execute()
+            )
+        except Exception as e:
+            if "42703" in str(e) or "column" in str(e).lower() or "404" in str(e):
+                return []
+            raise
+        return resp.data or []
+    rows = await asyncio.to_thread(_fetch)
+    return {r["fact_key"]: r["fact_value"] for r in rows}
+
+
+async def db_scope_has_rows(scope: str) -> bool:
+    """Does this scope already have conversation rows stored under it?
+
+    Used to work out whether a channel has been a room before. The tracker in
+    memory only knows who has spoken since the bot started; after a restart
+    it would think a busy channel was a private chat until somebody said
+    something.
+    """
+    def _fetch():
+        try:
+            resp = (
+                supabase.table("conversation_history")
+                .select("id")
+                .eq("user_id", str(scope))
+                .limit(1)
+                .execute()
+            )
+        except Exception:
+            return False
+        return bool(resp.data)
+    return await asyncio.to_thread(_fetch)
+
+
+async def db_get_user_facts_multi(user_ids) -> dict:
+    """All remembered facts across several scopes, as key -> value."""
+    ids = [str(u) for u in (user_ids or []) if u is not None]
+    if not ids:
+        return {}
+    if len(ids) == 1:
+        return await db_get_user_facts(ids[0])
+
+    def _fetch():
+        try:
+            resp = (
+                supabase.table("user_facts")
+                .select("fact_key, fact_value")
+                .in_("user_id", ids)
                 .execute()
             )
         except Exception as e:
