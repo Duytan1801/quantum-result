@@ -1,8 +1,10 @@
 """The agent loop: prompt building, context assembly, and tool-calling."""
 
 import asyncio
+import difflib
 import json
 import os
+import re
 
 import config
 from config import (
@@ -21,6 +23,7 @@ from context import (
 from sandbox import run_code_in_sandbox
 from storage import db_add_message, db_get_history, db_get_user_facts
 from tools import (
+    BASE_DIR,
     draw_diagram,
     edit_file,
     hf_dataset_info,
@@ -161,6 +164,10 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "") -> str:
         "training a model, fitting something over a real dataset, or a script "
         "that would be too slow or too big for the sandbox. Use kaggle_datasets "
         "to find real data to work with.\n"
+        "- A Kaggle run keeps the files it writes: they are pushed into the "
+        "next kaggle_run, so you can build a pipeline over several runs "
+        "instead of rebuilding everything each time, and you can read them "
+        "with read_file. You do NOT have to redo the previous run's work.\n"
         + kaggle_status_text
         + "\n\n"
         "For academic work:\n"
@@ -312,13 +319,21 @@ async def _run_tool(name: str, args: dict, channel=None, user_id=None) -> str:
     if name == "kaggle_run":
         import kaggle_backend
 
+        # The run's files are kept per user and pushed into the next run, so
+        # a pipeline can be built over several runs instead of being redone.
+        state_dir = os.path.join(BASE_DIR, "kaggle", str(user_id or "default"))
+
         result = await kaggle_backend.run_code(
             args.get("code", ""),
             timeout=int(args.get("timeout") or 600),
             accelerator=args.get("accelerator") or "",
             datasets=args.get("datasets") or [],
+            state_dir=state_dir,
         )
-        text = kaggle_backend.format_output(result)
+        text = kaggle_backend.format_output(
+            result,
+            state_rel=os.path.relpath(state_dir, BASE_DIR),
+        )
         # A script that wrote files gets them attached to the reply.
         for f in result.get("files") or []:
             path = f.get("path")
@@ -437,6 +452,142 @@ def _is_failure(result: str) -> bool:
     )
 
 
+# Matches one sentence: a run of text ending in a full stop, a question
+# mark or an exclamation mark, or any run without one.
+_SENTENCE_RE = re.compile(r"[^.!?\n]*[.!?]+|[^.!?\n]+")
+
+
+def _collapse_blocks(text: str, spam_at: int = 3) -> str:
+    """Collapse a whole block (paragraph) that has been repeated."""
+    blocks = text.split("\n\n")
+    keys = [" ".join(b.split()) for b in blocks]
+    counts = {}
+    for key in keys:
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+
+    kept = []
+    shown = {}
+    for block, key in zip(blocks, keys):
+        if not key or counts.get(key, 0) < spam_at:
+            kept.append(block)
+            continue
+        seen = shown.get(key, 0)
+        shown[key] = seen + 1
+        if seen == 0:
+            kept.append(block)
+        elif seen == 1:
+            kept.append(f"(the same paragraph was repeated {counts[key]} times; "
+                        f"it is shown once)")
+    return "\n\n".join(kept)
+
+
+def _collapse_lines(text: str, spam_at: int = 3) -> str:
+    """Collapse a line that has been repeated word for word."""
+    lines = text.split("\n")
+    keys = [" ".join(l.split()) for l in lines]
+    counts = {}
+    for key in keys:
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+
+    kept = []
+    shown = {}
+    for line, key in zip(lines, keys):
+        # Short lines are structure ("---", "-", "|"), not a repeated
+        # thought, so they are never touched.
+        if len(key) < 40 or counts.get(key, 0) < spam_at:
+            kept.append(line)
+            continue
+        seen = shown.get(key, 0)
+        shown[key] = seen + 1
+        if seen == 0:
+            kept.append(line)
+        elif seen == 1:
+            kept.append(f"(the same line was repeated {counts[key]} times; "
+                        f"it is shown once)")
+    return "\n".join(kept)
+
+
+def _split_sentences(line: str) -> list[tuple[str, str]]:
+    """Split a line into sentences, keeping the space before each one."""
+    out = []
+    for m in _SENTENCE_RE.finditer(line):
+        raw = m.group()
+        stripped = raw.lstrip()
+        out.append((stripped, raw[:len(raw) - len(stripped)]))
+    return out
+
+
+def _collapse_sentences(text: str, spam_at: int = 3) -> str:
+    """Collapse a sentence that has been repeated across the answer.
+
+    The model loops by writing the same sentence again and again, in the
+    same line or in the next one. Matching the sentences rather than the
+    lines catches both, and it is safe: two lines that merely look alike
+    (three cluster bullets, say) carry different sentences and are left
+    alone.
+    """
+    lines = text.split("\n")
+    parsed = [_split_sentences(line) for line in lines]
+
+    # How often does each sentence appear in the whole answer?
+    counts = {}
+    for line in parsed:
+        for sent, _ in line:
+            key = " ".join(sent.split())
+            if len(key) >= 40:
+                counts[key] = counts.get(key, 0) + 1
+    repeated = {key for key, n in counts.items() if n >= spam_at}
+
+    if not repeated:
+        return text
+
+    out_lines = []
+    seen = set()
+    for line in parsed:
+        kept = []
+        dropped = 0
+        for sent, gap in line:
+            key = " ".join(sent.split())
+            if key not in repeated:
+                kept.append(gap + sent)
+                continue
+            if key in seen:
+                # A copy of a sentence already shown - drop it.
+                dropped += 1
+                continue
+            seen.add(key)
+            kept.append(gap + sent)
+        if dropped:
+            kept.append(f" ({dropped} repeated sentence"
+                        f"{'s were' if dropped > 1 else ' was'} removed)")
+        out_lines.append("".join(kept))
+    return "\n".join(out_lines)
+
+
+def _collapse_repeats(text: str, spam_at: int = 3) -> str:
+    """Collapse a passage that has been repeated over and over.
+
+    A model that loops can write the same sentence many times in a row, and
+    the user ends up with several screens of the same paragraph. A passage
+    that appears a few times is left alone - that can be deliberate - but
+    one that is repeated over and over is shown once, with a note.
+
+    The repeat is looked for at three levels, because the junk that reached
+    Discord came in all three shapes: a whole paragraph repeated with a
+    blank line between the copies, the same paragraph repeated with only a
+    single newline between the copies, and the same sentence repeated with
+    no separator at all.
+    """
+    if not text:
+        return text
+    text = _collapse_blocks(text, spam_at)
+    text = _collapse_lines(text, spam_at)
+    text = _collapse_sentences(text, spam_at)
+    return text
+
+
 async def _summarise_at_limit(messages: list, max_tokens: int) -> str:
     """One last tool-free call, asking the model to report what it found.
 
@@ -490,6 +641,11 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     step_count = 0
     failed_count = 0
     continued = False
+    # How many times each exact tool call has been made, and how many times
+    # each tool has been called at all.
+    call_counts = {}
+    tool_counts = {}
+    warned_tool_count = set()
 
     while True:
         if step_count >= max_steps:
@@ -658,16 +814,63 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                 args = {}
                 result = f"Error: Invalid JSON arguments for {tc['name']} tool"
             else:
-                # A tool that raises must not kill the whole turn - the model
-                # needs to see the error so it can recover or answer directly.
-                try:
-                    result = await _run_tool(tc["name"], args, channel, user_id)
-                except Exception as exc:
-                    result = f"Error: {tc['name']} tool failed: {exc}"
-                    if channel:
-                        await channel.send(
-                            f"⚠️ The `{tc['name']}` tool failed: {str(exc)[:150]}"
-                        )
+                # The model can get stuck calling the same thing over and over
+                # - the log showed eighteen identical Kaggle runs in a row,
+                # nearly two hours, because each one started from nothing.
+                # A call that has already succeeded does not need doing again.
+                key = (tc["name"], json.dumps(args, sort_keys=True)[:400])
+                tool_counts[tc["name"]] = tool_counts.get(tc["name"], 0) + 1
+
+                if tool_counts[tc["name"]] >= 8 and tc["name"] not in warned_tool_count:
+                    warned_tool_count.add(tc["name"])
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"You have called `{tc['name']}` {tool_counts[tc['name']]} "
+                            f"times in this turn. Each call is expensive. Wrap the "
+                            f"task up with what you have now rather than running "
+                            f"it again."
+                        ),
+                    })
+
+                if call_counts.get(key, 0) >= 2:
+                    # The same call has already succeeded twice. Running it a
+                    # third time costs another minute and changes nothing, so
+                    # it is not run - the model is told why.
+                    result = (
+                        f"This exact `{tc['name']}` call has already been made "
+                        f"twice in this turn and produced a result both times. "
+                        f"It was not run again. Work with the result you already "
+                        f"have, change the arguments, or answer the user."
+                    )
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"You have called `{tc['name']}` with exactly the same "
+                            f"arguments three times. Repeating it will not change "
+                            f"the result, so the last one was not run. Do something "
+                            f"different: change the script, work with the files "
+                            f"the earlier runs produced, or answer the user with "
+                            f"what you already have."
+                        ),
+                    })
+                else:
+                    # A tool that raises must not kill the whole turn - the
+                    # model needs to see the error so it can recover or answer
+                    # directly.
+                    try:
+                        result = await _run_tool(tc["name"], args, channel, user_id)
+                    except Exception as exc:
+                        result = f"Error: {tc['name']} tool failed: {exc}"
+                        if channel:
+                            await channel.send(
+                                f"⚠️ The `{tc['name']}` tool failed: {str(exc)[:150]}"
+                            )
+                    # Only a call that worked counts towards the repeat limit:
+                    # retrying a call that failed is exactly what should
+                    # happen.
+                    if not _is_failure(result):
+                        call_counts[key] = call_counts.get(key, 0) + 1
 
             messages.append({
                 "role": "tool",
@@ -703,7 +906,7 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
             failed_count = 0
 
     return {
-        "answer": final_answer or "(no response)",
+        "answer": _collapse_repeats(final_answer or "(no response)"),
         "tools_used": tools_used,
         "steps": step_count,
     }

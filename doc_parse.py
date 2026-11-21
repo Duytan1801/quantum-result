@@ -27,8 +27,13 @@ MAX_OUTPUT_TOKENS = 4096
 
 # The parser returns its layout annotations inline: a coordinate pair for
 # every block it found, and a class tag naming the kind of block it is.
-_COORD_RE = re.compile(r"<x_[^>]*>\s*<y_[^>]*>")
-_CLASS_RE = re.compile(r"<class_[^>]*>")
+# They come in opening and closing forms, and the closing form of a
+# coordinate pair can be split across the text, so both are removed.
+_COORD_RE = re.compile(r"</?x_[^>]*>|</?y_[^>]*>")
+_CLASS_RE = re.compile(r"</?class_[^>]*>")
+# The row and cell tags inside a table.
+_ROW_RE = re.compile(r"</?row[^>]*>")
+_CELL_RE = re.compile(r"</?cell[^>]*>")
 _BLANKS_RE = re.compile(r"\n{3,}")
 
 
@@ -38,7 +43,12 @@ def clean_markup(text: str) -> str:
         return ""
     text = _COORD_RE.sub("", text)
     text = _CLASS_RE.sub("", text)
+    text = _ROW_RE.sub(" ", text)
+    text = _CELL_RE.sub(" ", text)
     text = _BLANKS_RE.sub("\n\n", text)
+    # A table row is now just its cells with spaces between them; tidy the
+    # runs of spaces that leaves behind.
+    text = re.sub(r"[ \t]{2,}", " ", text)
     return text.strip()
 
 

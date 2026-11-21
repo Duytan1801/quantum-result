@@ -38,6 +38,14 @@ def token_prompt() -> str:
     key = token()
     if not key:
         return ""
+    if _token_is_bad():
+        # Do not hand the model a token the Hub has already refused.
+        return (
+            "- The Hub token in this environment has expired, so the Hub is "
+            "being used anonymously. Public models and datasets can still be "
+            "searched, read and downloaded, but gated and private "
+            "repositories cannot.\n"
+        )
     return (
         "- Hub token: " + key + "\n"
         "- To pull a model or dataset down in code, install the client first "
@@ -48,6 +56,10 @@ def token_prompt() -> str:
         "token='" + key + "')\n"
         "- The hf_download tool does the same thing and leaves the files in "
         "the workspace, where you can read them.\n"
+        "- The Hub uses different names from the API. The embedding model "
+        "the API calls 'nvidia/nemotron-3.5-embed-1b' is on the Hub as "
+        "'nvidia/Nemotron-3.5-Embed-1B-BF16'; the document parser is "
+        "'nvidia/Nemotron-3.5-Parse'.\n"
     )
 
 
@@ -58,14 +70,42 @@ def token() -> str:
 def _headers(accept: str = "application/json") -> dict:
     headers = {"Accept": accept}
     key = token()
-    if key:
+    if key and not _token_is_bad():
         headers["Authorization"] = f"Bearer {key}"
     return headers
+
+
+# Set once the Hub has rejected the token. The Hub is still perfectly
+# usable without one for everything public, so a stale or expired token
+# must not take the whole feature down.
+_token_bad = False
+
+
+def _token_is_bad() -> bool:
+    return _token_bad
+
+
+def _note_bad_token(status: int, body: str = "") -> None:
+    """Remember that the token was rejected, and say why."""
+    global _token_bad
+    if status not in (401, 403):
+        return
+    text = (body or "").lower()
+    if "expired" in text or "invalid" in text or "revoked" in text:
+        _token_bad = True
+        print(f"huggingface: the Hub token was rejected ({status}); "
+              f"falling back to anonymous access until it is replaced")
 
 
 async def _get_json(url: str, params: dict = None) -> list | dict:
     async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(url, params=params, headers=_headers())
+        if resp.status_code in (401, 403):
+            _note_bad_token(resp.status_code, resp.text)
+            # Public repositories work without a token, so try again as an
+            # anonymous visitor rather than giving up.
+            resp = await client.get(url, params=params,
+                                    headers={"Accept": "application/json"})
         resp.raise_for_status()
         return resp.json()
 
@@ -73,6 +113,9 @@ async def _get_json(url: str, params: dict = None) -> list | dict:
 async def _get_text(url: str, accept: str = "text/plain") -> str:
     async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(url, headers=_headers(accept))
+        if resp.status_code in (401, 403):
+            _note_bad_token(resp.status_code, resp.text)
+            resp = await client.get(url, headers={"Accept": accept})
         resp.raise_for_status()
         return resp.text
 
@@ -306,7 +349,16 @@ def _repo_size(repo_id: str, repo_type: str) -> tuple[list, int]:
     from huggingface_hub import HfApi
 
     api = HfApi(token=token() or None)
-    info = api.repo_info(repo_id, repo_type=repo_type, files_metadata=True)
+    try:
+        info = api.repo_info(repo_id, repo_type=repo_type, files_metadata=True)
+    except Exception as exc:
+        # A rejected token is not the end of it: public repositories can be
+        # reached anonymously.
+        if _token_is_bad() or not token():
+            info = api.repo_info(repo_id, repo_type=repo_type,
+                                 files_metadata=True, token=False)
+        else:
+            raise
     files = []
     total = 0
     for sibling in getattr(info, "siblings", None) or []:
@@ -320,7 +372,7 @@ def _download_sync(repo_id: str, repo_type: str, filename: str,
                    dest: str, max_bytes: int) -> dict:
     from huggingface_hub import hf_hub_download, snapshot_download
 
-    key = token() or None
+    key = None if _token_is_bad() else (token() or None)
     files, total = _repo_size(repo_id, repo_type)
 
     if filename:

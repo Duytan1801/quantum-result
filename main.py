@@ -279,6 +279,18 @@ async def kaggle_cmd(ctx):
 # ---------------------------------------------------------------------------
 # Events
 # ---------------------------------------------------------------------------
+async def _reembed_if_needed(model: str):
+    """Re-embed memories if the embedding model has changed."""
+    try:
+        from memory import reembed_stale_memories
+
+        count = await reembed_stale_memories()
+        if count:
+            print(f"long-term memory: re-embedded {count} memories for {model}")
+    except Exception as exc:
+        print(f"long-term memory: re-embed failed ({exc})")
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
@@ -304,10 +316,15 @@ async def on_ready():
     # supabase_memory.sql has been run, and it says so rather than failing
     # quietly on every turn.
     try:
-        from memory import EMBED_MODEL, is_available
+        from memory import active_model, is_available
 
         if await is_available():
-            print(f"long-term memory: on ({EMBED_MODEL})")
+            model = await active_model()
+            print(f"long-term memory: on ({model})")
+            # The embedding model can change (the preferred one sometimes
+            # stops answering), and vectors from different models cannot be
+            # compared, so the old ones are re-embedded in the background.
+            asyncio.create_task(_reembed_if_needed(model))
         else:
             print("long-term memory: OFF - run supabase_memory.sql in the "
                   "Supabase SQL editor")

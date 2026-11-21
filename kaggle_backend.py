@@ -25,6 +25,7 @@ needs a GPU, and it fits the bot's background job model perfectly.
 """
 
 import asyncio
+import base64
 import json
 import os
 import shutil
@@ -382,9 +383,102 @@ def _internet_is_on(client, ref: str) -> bool:
 # Slugs whose internet setting has already been checked.
 _internet_checked: set[str] = set()
 
+# Where the files a Kaggle run produces are kept.
+#
+# A Kaggle kernel is a fresh machine every time: whatever the script wrote is
+# gone when it finishes. Without somewhere to put those files, the only way
+# to use a result is to rebuild it from scratch in the next run - which is
+# what the model kept trying to do, over and over, for nearly two hours.
+#
+# The files are kept here and pushed back into the next kernel, so a pipeline
+# can be built up over several runs.
+STATE_ROOT = os.getenv("KAGGLE_STATE_DIR") or os.path.join(
+    os.getcwd(), "bot_files", "kaggle")
+
+# How much is carried into the next run. Kaggle only uploads the script
+# itself, so the files travel inside it.
+MAX_CARRY_FILE = 2 * 1024 * 1024
+MAX_CARRY_TOTAL = 8 * 1024 * 1024
+
+
+def _state_dir(state_dir: str = "") -> str:
+    return state_dir or STATE_ROOT
+
+
+def _carry_preamble(state_dir: str) -> tuple[str, list[str]]:
+    """Build the preamble that recreates the last run's files.
+
+    Kaggle uploads only the script, so the files from the previous run are
+    written back out by a short preamble at the top of it. The kernel's
+    working directory is /kaggle/working and the script runs there, so a
+    file called "data.csv" is simply there for the code to open.
+    """
+    if not state_dir or not os.path.isdir(state_dir):
+        return "", []
+
+    try:
+        names = [n for n in os.listdir(state_dir)
+                 if os.path.isfile(os.path.join(state_dir, n))]
+    except OSError:
+        return "", []
+
+    # Newest first: the recent outputs matter more than the old ones.
+    names.sort(key=lambda n: os.path.getmtime(os.path.join(state_dir, n)),
+               reverse=True)
+
+    lines = ["import base64, os, pathlib"]
+    carried = []
+    total = 0
+    for name in names:
+        path = os.path.join(state_dir, name)
+        try:
+            size = os.path.getsize(path)
+            if size > MAX_CARRY_FILE or total + size > MAX_CARRY_TOTAL:
+                continue
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            continue
+
+        blob = base64.b64encode(data).decode("ascii")
+        lines.append(
+            f"pathlib.Path({name!r}).write_bytes(base64.b64decode({blob!r}))"
+        )
+        carried.append(name)
+        total += size
+
+    if not carried:
+        return "", []
+    return "\n".join(lines) + "\n", carried
+
+
+def _save_outputs(files: list, state_dir: str) -> list[str]:
+    """Keep a run's output files for the next run, and for reading."""
+    if not state_dir:
+        return []
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+    except OSError:
+        return []
+
+    saved = []
+    for f in files or []:
+        path = f.get("path")
+        name = f.get("name") or (os.path.basename(path) if path else "")
+        if not path or not name or name.endswith(".log"):
+            continue
+        if not os.path.isfile(path):
+            continue
+        try:
+            shutil.copy2(path, os.path.join(state_dir, name))
+            saved.append(name)
+        except Exception:
+            pass
+    return saved
+
 
 def _run_sync(code: str, timeout: int, accelerator: str, datasets: list,
-              label: str) -> dict:
+              label: str, state_dir: str = "") -> dict:
     """Push a script to Kaggle, wait for it, and collect the output."""
     client = _kaggle_api()
     if client is None:
@@ -402,8 +496,12 @@ def _run_sync(code: str, timeout: int, accelerator: str, datasets: list,
         meta = _metadata(slug, owner, accelerator, datasets, label or slug)
         with open(os.path.join(work, "kernel-metadata.json"), "w") as fh:
             json.dump(meta, fh, indent=2)
+
+        # The last run's files go along, so the script can build on them
+        # instead of starting from nothing.
+        preamble, carried = _carry_preamble(state_dir)
         with open(os.path.join(work, "main.py"), "w") as fh:
-            fh.write(code)
+            fh.write(preamble + code)
 
         ref = f"{owner}/{slug}" if owner else slug
 
@@ -490,10 +588,15 @@ def _run_sync(code: str, timeout: int, accelerator: str, datasets: list,
             # No output files is normal for a script that only prints.
             pass
 
+        # Keep the files so the next run has them and the user can read them.
+        saved = _save_outputs(files, state_dir)
+
         return {
             "stdout": "".join(stdout),
             "stderr": "".join(stderr),
             "files": files,
+            "saved": saved,
+            "carried": carried,
             "state": state,
             "failure": failure,
             "elapsed": round(elapsed, 1),
@@ -507,12 +610,16 @@ def _run_sync(code: str, timeout: int, accelerator: str, datasets: list,
 
 
 async def run_code(code: str, timeout: int = 600, accelerator: str = "",
-                   datasets: list = None, label: str = "") -> dict:
+                   datasets: list = None, label: str = "",
+                   state_dir: str = "") -> dict:
     """Run a Python script on Kaggle and return its output.
 
     `accelerator` is empty for CPU, or a machine shape such as
     "NvidiaTeslaT4" / "NvidiaH100" / "TpuV5E8". `datasets` is a list of
     Kaggle dataset refs to mount at /kaggle/input/<ref>.
+
+    `state_dir` is where the run's files are kept. They are pushed into the
+    next run, so consecutive runs can build on each other.
     """
     if not (code or "").strip():
         return {"error": "no code given"}
@@ -521,7 +628,8 @@ async def run_code(code: str, timeout: int = 600, accelerator: str = "",
     for attempt in range(12):
         try:
             return await asyncio.to_thread(
-                _run_sync, code, timeout, accelerator or "", datasets or [], label
+                _run_sync, code, timeout, accelerator or "", datasets or [],
+                label, state_dir
             )
         except RuntimeError as exc:
             if "busy" not in str(exc):
@@ -555,8 +663,12 @@ def _clean_stderr(text: str) -> str:
     return "\n".join(kept).strip()
 
 
-def format_output(result: dict, max_chars: int = 8000) -> str:
-    """Render a run result as text for the model."""
+def format_output(result: dict, max_chars: int = 8000, state_rel: str = "") -> str:
+    """Render a run result as text for the model.
+
+    `state_rel` is where the run's files live, relative to the workspace, so
+    the model can read them with read_file.
+    """
     if result.get("error"):
         return f"Error: {result['error']}"
 
@@ -566,10 +678,21 @@ def format_output(result: dict, max_chars: int = 8000) -> str:
     stderr = _clean_stderr(result.get("stderr") or "")
     if stderr:
         parts.append(f"[stderr]\n{stderr}")
+    saved = set(result.get("saved") or [])
     for f in result.get("files") or []:
         if f["name"].endswith(".log"):
             continue
-        parts.append(f"[file] {f['name']} ({f['size']} bytes)")
+        where = ""
+        if f["name"] in saved:
+            where = " (kept for the next run)"
+            if state_rel:
+                where += f" - read it with read_file(\"{state_rel}/{f['name']}\")"
+        parts.append(f"[file] {f['name']} ({f['size']} bytes){where}")
+    if result.get("carried"):
+        parts.append(
+            "[carried into this run, in the working directory] "
+            + ", ".join(result["carried"][:40])
+        )
     if result.get("failure"):
         parts.append(f"[failed] {result['failure']}")
 

@@ -42,6 +42,25 @@ from config import NVIDIA_API_KEY, NVIDIA_API_URL, provider_chain
 # model line and matched it on retrieval quality (R@1 0.933, MRR 0.943) in
 # testing. Both are 2048 dimensions, so the vector index size is the same.
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nvidia/nemotron-3.5-embed-1b")
+
+# The preferred model sometimes hangs at the API's end - nemotron-3.5-embed-1b
+# stopped answering altogether on 2026-11-19 - which would leave the bot with
+# no memory at all. The older model is the backup: same 2048 dimensions, same
+# measured retrieval quality, and it answers in about a second.
+EMBED_MODEL_FALLBACK = os.getenv("EMBED_MODEL_FALLBACK", "nvidia/nemotron-3-embed-1b")
+
+# Which model is actually in use. Settled by a probe and then kept for the
+# life of the process, so every vector in the table comes from the same
+# model and stays comparable.
+_active_embed_model = EMBED_MODEL
+_active_model_checked = False
+
+# Models that stopped answering, and when they may be tried again.
+_dropped_until: dict[str, float] = {}
+
+# How long a model that failed is left alone before it is tried again.
+MODEL_RETRY_AFTER = float(os.getenv("MEMORY_MODEL_RETRY_AFTER", "3600"))
+
 EMBED_DIM = 2048
 
 MEMORY_TABLE = "memories"
@@ -92,6 +111,14 @@ _QUERY_CACHE_MAX = 256
 EMBED_TIMEOUT = float(os.getenv("MEMORY_EMBED_TIMEOUT", "20"))
 EMBED_ATTEMPTS = int(os.getenv("MEMORY_EMBED_ATTEMPTS", "3"))
 
+# How many texts go in one embedding call.
+EMBED_BATCH = int(os.getenv("MEMORY_EMBED_BATCH", "64"))
+
+# The probe decides which model every memory in the table is compared with,
+# so it is given more time than an ordinary call. The preferred model
+# answers only now and then, and a too-hasty probe would give up on it.
+PROBE_TIMEOUT = float(os.getenv("MEMORY_PROBE_TIMEOUT", "45"))
+
 
 def _cache_get(key: str):
     return _QUERY_CACHE.get(key)
@@ -125,6 +152,101 @@ def _table_exists() -> bool:
         return False
 
 
+async def _probe_model(model: str) -> bool:
+    """Does this embedding model answer?"""
+    try:
+        async with httpx.AsyncClient(timeout=PROBE_TIMEOUT) as client:
+            resp = await client.post(
+                f"{NVIDIA_API_URL}/embeddings",
+                headers={
+                    "Authorization": f"Bearer {NVIDIA_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "input": ["probe"],
+                    "encoding_format": "float",
+                    "input_type": "passage",
+                    "truncate": "END",
+                },
+            )
+        if resp.status_code != 200:
+            return False
+        data = resp.json()
+        vectors = data.get("data") or []
+        return bool(vectors) and len(vectors[0].get("embedding") or []) == EMBED_DIM
+    except Exception:
+        return False
+
+
+async def active_model(force: bool = False) -> str:
+    """The embedding model to use, settled by a probe.
+
+    The preferred model is tried first. If it does not answer, the backup is
+    used instead. The choice is then kept, so every memory is written and
+    searched with the same model.
+
+    A model that has already been dropped is not tried again for a while.
+    The preferred model is currently answering only now and then, and
+    flipping back and forth would mean re-embedding every memory each time.
+    """
+    global _active_embed_model, _active_model_checked
+
+    if _active_model_checked and not force:
+        return _active_embed_model
+
+    _active_model_checked = True
+    now = time.monotonic()
+
+    for candidate in (EMBED_MODEL, EMBED_MODEL_FALLBACK):
+        if _dropped_until.get(candidate, 0) > now:
+            # It was dropped recently; leave it alone for now.
+            continue
+
+        if await _probe_model(candidate):
+            if candidate != _active_embed_model:
+                print(f"memory: using the {candidate} embedding model")
+            _active_embed_model = candidate
+            return _active_embed_model
+
+        print(f"memory: {candidate} did not answer")
+        _dropped_until[candidate] = now + MODEL_RETRY_AFTER
+
+    # Neither answered. Keep whatever is in use and let the retry logic in
+    # embed() deal with it.
+    return _active_embed_model
+
+
+async def _embed_with(model: str, texts: list[str], input_type: str) -> list:
+    """One embedding call, with the retries. Returns [] on failure."""
+    payload = {
+        "model": model,
+        "input": texts,
+        "encoding_format": "float",
+        "input_type": input_type,
+        "truncate": "END",
+    }
+    headers = {
+        "Authorization": f"Bearer {NVIDIA_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    for attempt in range(EMBED_ATTEMPTS):
+        try:
+            async with httpx.AsyncClient(timeout=EMBED_TIMEOUT) as client:
+                resp = await client.post(f"{NVIDIA_API_URL}/embeddings",
+                                         headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+            # The API may reorder items; sort by index to be safe.
+            items = sorted(data["data"], key=lambda d: d.get("index", 0))
+            return [item["embedding"] for item in items]
+        except Exception:
+            if attempt < EMBED_ATTEMPTS - 1:
+                await asyncio.sleep(1.5 * (attempt + 1))
+    return []
+
+
 async def embed(texts: list[str], input_type: str = "passage") -> list[list[float]]:
     """Embed texts with the NVIDIA embeddings API.
 
@@ -137,48 +259,34 @@ async def embed(texts: list[str], input_type: str = "passage") -> list[list[floa
     if not NVIDIA_API_KEY:
         raise RuntimeError("NVIDIA_API_KEY is not set")
 
+    model = await active_model()
+
     if input_type == "query":
-        key = f"{EMBED_MODEL}\x00{texts[0]}"
+        key = f"{model}\x00{texts[0]}"
         cached = _cache_get(key)
         if cached is not None:
             return [cached]
 
-    payload = {
-        "model": EMBED_MODEL,
-        "input": texts,
-        "encoding_format": "float",
-        "input_type": input_type,
-        "truncate": "END",
-    }
-    headers = {
-        "Authorization": f"Bearer {NVIDIA_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    last_error = None
-    vectors = []
-    for attempt in range(EMBED_ATTEMPTS):
-        try:
-            async with httpx.AsyncClient(timeout=EMBED_TIMEOUT) as client:
-                resp = await client.post(f"{NVIDIA_API_URL}/embeddings",
-                                         headers=headers, json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-            # The API may reorder items; sort by index to be safe.
-            items = sorted(data["data"], key=lambda d: d.get("index", 0))
-            vectors = [item["embedding"] for item in items]
-            break
-        except Exception as exc:
-            last_error = exc
-            if attempt < EMBED_ATTEMPTS - 1:
-                await asyncio.sleep(1.5 * (attempt + 1))
+    vectors = await _embed_with(model, texts, input_type)
+    if not vectors:
+        # The model stopped answering. Settle on whichever one works now and
+        # try again, rather than losing memory for the whole session.
+        other = await active_model(force=True)
+        if other != model:
+            print(f"memory: switched the embedding model to {other}")
+            vectors = await _embed_with(other, texts, input_type)
+            if vectors:
+                # The stored memories were made with the old model and
+                # cannot be compared with these, so they are re-embedded.
+                asyncio.create_task(_reembed_in_background(other))
 
     if not vectors:
-        raise RuntimeError(f"embedding failed after {EMBED_ATTEMPTS} tries: {last_error}")
+        raise RuntimeError(f"embedding failed after {EMBED_ATTEMPTS} tries "
+                           f"with {model}")
 
     if len(vectors[0]) != EMBED_DIM:
         raise RuntimeError(
-            f"{EMBED_MODEL} returned {len(vectors[0])}-dimension vectors but the "
+            f"{model} returned {len(vectors[0])}-dimension vectors but the "
             f"table is vector({EMBED_DIM}). Change EMBED_MODEL and EMBED_DIM "
             f"together, and re-embed the stored memories."
         )
@@ -186,6 +294,16 @@ async def embed(texts: list[str], input_type: str = "passage") -> list[list[floa
     if input_type == "query":
         _cache_put(key, vectors[0])
     return vectors
+
+
+async def _reembed_in_background(model: str):
+    """Re-embed the stored memories after the model changed."""
+    try:
+        count = await reembed_stale_memories()
+        if count:
+            print(f"memory: re-embedded {count} memories for {model}")
+    except Exception as exc:
+        print(f"memory: re-embed failed ({exc})")
 
 
 def _vector_literal(vector: list[float]) -> str:
@@ -213,6 +331,7 @@ async def retrieve_memories(user_id: str, query: str, top_k: int = 6,
         str(user_id),
         _vector_literal(vectors[0]),
         top_k,
+        await active_model(),
     )
     if min_score is None:
         min_score = MIN_RELEVANCE
@@ -244,7 +363,8 @@ def _touch(ids: list) -> None:
         pass
 
 
-def _match_memories(user_id: str, embedding: str, top_k: int) -> list[dict]:
+def _match_memories(user_id: str, embedding: str, top_k: int,
+                    model: str = "") -> list[dict]:
     """Call the pgvector search function. Runs in a thread (sync client)."""
     from storage import supabase
 
@@ -254,7 +374,7 @@ def _match_memories(user_id: str, embedding: str, top_k: int) -> list[dict]:
             "p_user_id": user_id,
             "p_embedding": embedding,
             "p_match_count": top_k,
-            "p_model": EMBED_MODEL,
+            "p_model": model or EMBED_MODEL,
             "p_recency_weight": RECENCY_WEIGHT,
             "p_half_life_days": RECENCY_HALF_LIFE_DAYS,
             "p_dedupe_distance": DEDUPE_DISTANCE,
@@ -269,6 +389,7 @@ async def store_memories(user_id: str, memories: list[dict],
     memories = [m for m in memories if (m.get("content") or "").strip()]
     if not memories:
         return 0
+    model = await active_model()
     try:
         vectors = await embed([m["content"] for m in memories])
     except Exception as exc:
@@ -281,7 +402,7 @@ async def store_memories(user_id: str, memories: list[dict],
             "kind": m.get("kind", "fact"),
             "content": m["content"].strip(),
             "embedding": vectors[i],
-            "embed_model": EMBED_MODEL,
+            "embed_model": model,
             "embed_dim": EMBED_DIM,
             "source": source,
         }
@@ -386,10 +507,11 @@ async def reembed_stale_memories(user_id: str = None) -> int:
     """
     from storage import supabase
 
+    model = await active_model()
     try:
         query = (supabase.table(MEMORY_TABLE)
-                 .select("id,content")
-                 .neq("embed_model", EMBED_MODEL))
+                 .select("id,user_id,kind,content,source")
+                 .neq("embed_model", model))
         if user_id:
             query = query.eq("user_id", str(user_id))
         rows = query.execute().data or []
@@ -400,16 +522,36 @@ async def reembed_stale_memories(user_id: str = None) -> int:
         return 0
 
     try:
-        vectors = await embed([r["content"] for r in rows])
+        # The API takes a limited number of texts at a time, so the rows go
+        # through in batches.
+        vectors = []
+        for start in range(0, len(rows), EMBED_BATCH):
+            chunk = await embed([r["content"] for r in rows[start:start + EMBED_BATCH]])
+            if not chunk:
+                raise RuntimeError(f"the batch at {start} did not embed")
+            vectors.extend(chunk)
     except Exception as exc:
         print(f"could not embed stale memories: {exc}")
         return 0
 
     def _update():
+        # One request per row would be hundreds of round trips, so the rows
+        # are written with a single upsert.
+        payload = []
         for row, vector in zip(rows, vectors):
-            supabase.table(MEMORY_TABLE).update(
-                {"embedding": vector, "embed_model": EMBED_MODEL, "embed_dim": EMBED_DIM}
-            ).eq("id", row["id"]).execute()
+            payload.append({
+                "id": row["id"],
+                "user_id": row.get("user_id"),
+                "kind": row.get("kind") or "fact",
+                "content": row["content"],
+                "embedding": vector,
+                "embed_model": model,
+                "embed_dim": EMBED_DIM,
+                "source": row.get("source"),
+            })
+        for start in range(0, len(payload), 50):
+            supabase.table(MEMORY_TABLE).upsert(
+                payload[start:start + 50], on_conflict="id").execute()
 
     try:
         await asyncio.to_thread(_update)
