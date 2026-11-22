@@ -352,11 +352,14 @@ async def summarize_messages(messages: list) -> str:
     for _name, client, model in provider_chain():
         # The model's max output is 131072. Give the summary that much room:
         # it is a reasoning model, and a smaller budget makes it spend the
-        # tokens thinking and return an empty summary.
+        # tokens thinking and return an empty summary. Groq is the
+        # exception - its models cap out far lower, and asking for more
+        # than they allow is refused outright.
+        budget = 32768 if _name == "Groq" else 131072
         try:
             response = await client.chat.completions.create(
                 model=model,
-                max_completion_tokens=131072,
+                max_completion_tokens=budget,
                 extra_body=extra_body_for(_name),
                 **request,
             )

@@ -20,12 +20,16 @@ services:
         sync: false
       - key: NVIDIA_API_KEY
         sync: false
+      - key: LAGUNA_MODEL
+        value: poolside/laguna-xs-2.1
+      - key: MINIMAX_MODEL
+        value: minimaxai/minimax-m3.1-flash
       - key: NVIDIA_MODEL
         value: nvidia/nemotron-3.5-super-vl-120b-a12b
       - key: GROQ_API_KEY
         sync: false
       - key: GROQ_MODEL
-        value: qwen/qwen3.8-27b
+        value: llama-3.3-70b-versatile
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_KEY

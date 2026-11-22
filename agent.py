@@ -689,9 +689,10 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     if tools is None:
         tools = TOOLS
 
-    # A turn that carries a picture needs a model that can see one. MiniMax
-    # M3.1 Flash cannot, so it is skipped for those turns and Nemotron goes
-    # first; everything else starts with MiniMax, which is much faster.
+    # A turn that carries a picture needs a model that can see one. Laguna
+    # and MiniMax cannot, so they are skipped for those turns and Nemotron
+    # goes first; everything else starts with Laguna, which is the fastest
+    # of the three.
     chain = (vision_models() if _has_image(messages)
              else provider_chain())
 
@@ -734,8 +735,8 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
         # Keep the request inside the model's context window.
         messages = trim_context(messages)
 
-        # Try the models in order: MiniMax first, then Nemotron.
-        # A turn with a picture in it skips MiniMax, which cannot look at
+        # Try the models in order: Laguna, MiniMax, Nemotron, then Groq.
+        # A turn with a picture in it skips the two that cannot look at
         # images, and goes to Nemotron first.
         stream = None
         last_error = None
