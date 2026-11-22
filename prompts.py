@@ -219,7 +219,11 @@ def turn_note() -> str:
         "information, it is WORKING: call a tool first, even if every turn "
         "before it was personal chat and even if you think you know the "
         "answer. If it is somebody talking about their day, their feelings "
-        "or their life, it is TALKING: no tool, just be there."
+        "or their life, it is TALKING: no tool, just be there.\n"
+        "Answer the message you were given NOW - the last one in the "
+        "conversation. If somebody else has already answered it, do not "
+        "repeat their answer: say what is new, or say nothing. Never answer "
+        "an older message that has already been dealt with."
     )
 
 

@@ -85,6 +85,10 @@ def bot_name_variants(user) -> tuple[str, ...]:
     A bot called "lain2" is also "lain"; one called "quantum-bot" is also
     "quantum". This is derived rather than written down, so renaming the bot
     needs no code change.
+
+    A diminutive is in there too: people who like a name shorten it, and
+    "lainy" was how the bot was addressed in the log while its own name was
+    "lain2".
     """
     names = set()
     for attr in ("display_name", "global_name", "name"):
@@ -100,6 +104,9 @@ def bot_name_variants(user) -> tuple[str, ...]:
             trimmed = raw.rstrip("0123456789").rstrip("_- ")
             if trimmed:
                 names.add(trimmed)
+                # "lain" -> "lainy", "quantum" -> "quantumy"
+                if len(trimmed) >= 4:
+                    names.add(trimmed + "y")
             # "quantumbot" -> "quantum"
             if trimmed.endswith("bot") and len(trimmed) > 3:
                 names.add(trimmed[:-3].rstrip("_- "))
@@ -126,12 +133,105 @@ def replies_to_bot(message, bot_message_ids) -> bool:
     return message_id in bot_message_ids
 
 
+def names_in(text: str, names) -> tuple[str, ...]:
+    """Which of these names the message actually uses.
+
+    "lain" and "lain2" are two spellings of the same name, so a message
+    that uses both is one mention, not two.
+    """
+    if not text:
+        return ()
+    low = text.lower()
+    found = []
+    for name in names or ():
+        needle = name.lower()
+        if not needle:
+            continue
+        if re.search(rf"(?<![a-z]){re.escape(needle)}(?![a-z])", low):
+            found.append(name)
+    return tuple(found)
+
+
 def says_bot_name(text: str, names) -> bool:
     """Does the message use one of the bot's names?"""
+    return bool(names_in(text, names))
+
+
+def name_collisions(bot_names, roster) -> dict[str, str]:
+    """Bot names that are also somebody else's name in this room.
+
+    The bot is "lain2"; one of the people in the chat is called "Lain".
+    A message that is just "Lain" is much more likely to be that person
+    giving their name than the bot being addressed - and the bot cannot
+    answer to it, or it would answer its own name every time somebody
+    introduced themselves.
+
+    This cannot be a list of names, because it depends on who is in the
+    room today. It is read from the roster and then handed to the model,
+    which can see whether the message is talking to the bot or saying
+    somebody's name.
+    """
+    humans: dict[str, str] = {}
+    for entry in roster or ():
+        if not isinstance(entry, dict):
+            continue
+        for value in (entry.get("name"), entry.get("plain")):
+            if not value:
+                continue
+            key = plain_name(str(value)).strip().lower()
+            if key and key not in humans:
+                humans[key] = str(value)
+    out: dict[str, str] = {}
+    for name in bot_names or ():
+        needle = plain_name(str(name)).strip().lower()
+        if needle and needle in humans:
+            out[name] = humans[needle]
+    return out
+
+
+def addresses_bot(text: str, names, exclude=()) -> bool:
+    """Is the bot's name used to address it, rather than mentioned in passing?
+
+    The difference showed up in the log. These are all the same name:
+
+        "Sup lain"                      - the bot is being talked to
+        "Yo lain she went to sleep"     - the bot is being talked to
+        "Lain"                          - Damian telling Jade his name
+        "E yeu lain2 hon ca toi"        - Damian telling Jade he loves the bot
+        "Mốt chắc lain2 cướp luôn e"   - two people talking about the bot
+
+    The first two are addressed to the bot and the last three are not, and
+    the difference is where the name sits: a name at the front of the
+    message is who you are talking to, a name in the middle of a sentence
+    is who you are talking about. The middle ones are left to the model,
+    which reads the room properly.
+
+    `exclude` holds names that belong to somebody else in the room as
+    well - the bot is "lain2" and one of the people is called "Lain". A
+    message that is nothing but that name is left to the model, because
+    it may well be that person giving their name. With any other words
+    around it, the name is an address like any other.
+    """
     if not text:
         return False
-    low = text.lower()
+    skip = {str(n).lower() for n in exclude or ()}
+    stripped = text.strip().strip(".,!?¿¡:;…-–— \t\n")
+    words = stripped.split()
+    if not words:
+        return False
+    # Only the first two words are considered: a name after that is
+    # somebody talking about the bot.
+    front = " ".join(words[:2]).lower()
+    bare_name = len(words) == 1
     for name in names or ():
-        if re.search(rf"(?<![a-z]){re.escape(name.lower())}(?![a-z])", low):
+        needle = name.lower()
+        if not needle:
+            continue
+        if needle in skip and bare_name:
+            # The message is nothing but a name that belongs to somebody
+            # else too. It is left to the model, which can see who is
+            # talking to whom.
+            continue
+        if re.search(rf"(?<![a-z]){re.escape(needle)}(?![a-z])", front):
             return True
     return False

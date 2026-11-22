@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import time
 
 import discord
 from discord.ext import commands
@@ -27,7 +28,7 @@ from people import (
     roster_from_messages,
     roster_line,
 )
-from presence import ChannelTracker, channel_scope, decide
+from presence import ChannelTracker, WAIT_SECONDS, channel_scope, decide
 from sandbox import run_code_in_sandbox
 from storage import (
     db_delete_fact,
@@ -71,6 +72,26 @@ SHARED_CHANNELS: dict[str, bool] = {}
 # listed in the code: the bot learns the room from the room.
 ROSTERS: dict[str, list] = {}
 ROSTER_TTL = 300
+
+# When the bot last spoke in each channel. The classifier is told, so it
+# can stay quiet instead of talking over the room: a bot that answers
+# every thirty seconds turns a conversation into a monologue.
+LAST_BOT_REPLY: dict[str, float] = {}
+
+# The room's recent messages, cached for a couple of seconds so a burst of
+# messages does not mean a burst of API calls. The classifier reads them to
+# see who is talking to whom.
+RECENT_MESSAGES: dict[str, tuple[float, list]] = {}
+RECENT_TTL = 2.5
+
+# A count of the messages seen in each channel. It goes into the
+# classifier's cache key, so a second look at a message after the room has
+# changed is a fresh look rather than a stale one.
+ROOM_VERSION: dict[str, int] = {}
+
+# A message that looked unfinished, and the task that will answer it if
+# nothing else comes.
+WAITING: dict[str, asyncio.Task] = {}
 
 
 async def _channel_roster(channel_id: str, channel=None, force: bool = False) -> list:
@@ -126,6 +147,56 @@ def _channel_lock(channel_id: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         CHANNEL_LOCKS[channel_id] = lock
     return lock
+
+
+async def _recent_messages(channel, limit: int = 8,
+                           exclude_id=None) -> list[tuple[str, str]]:
+    """The last few messages in the channel, as (who, what) pairs.
+
+    The classifier reads these to see who is talking to whom, and whether
+    the person has already been answered. They are cached for a couple of
+    seconds, so a burst of messages does not mean a burst of API calls.
+    """
+    channel_id = str(channel.id)
+    cached = RECENT_MESSAGES.get(channel_id)
+    now = time.monotonic()
+    if cached and now - cached[0] < RECENT_TTL:
+        return cached[1]
+
+    lines = []
+    try:
+        async for msg in channel.history(limit=limit + 2):
+            if exclude_id is not None and msg.id == exclude_id:
+                continue
+            if msg.author.bot:
+                who = "the bot"
+            else:
+                who = msg.author.display_name or msg.author.name
+            lines.append((who, (msg.content or "")[:300]))
+            if len(lines) >= limit:
+                break
+    except Exception as exc:
+        print(f"could not read the recent messages in {channel_id}: {exc}")
+    lines.reverse()
+    RECENT_MESSAGES[channel_id] = (now, lines)
+    return lines
+
+
+def _reply_target(message) -> str:
+    """The name of the person a message is replying to, if it is a person.
+
+    A Discord reply says who the message is for. That is exact, and it is
+    the single most useful thing to know about a message in a room: most
+    of what the bot answered in the log were replies to the other person.
+    """
+    ref = getattr(message, "referenced_message", None)
+    if ref is None:
+        return ""
+    author = getattr(ref, "author", None)
+    if author is None or getattr(author, "bot", False):
+        # A reply to the bot is already handled structurally.
+        return ""
+    return author.display_name or author.name or ""
 
 
 def _remember_bot_messages(channel_id: str, messages) -> None:
@@ -572,7 +643,18 @@ async def on_message(message):
     speaker = person_entry(message.author)
     bot_names = bot_name_variants(bot.user)
 
-    async def _decide():
+    # The room moves on while the bot is thinking. Every message bumps the
+    # version, so the second look at this message is made against the room
+    # as it is then, not as it was.
+    ROOM_VERSION[channel_id] = ROOM_VERSION.get(channel_id, 0) + 1
+
+    # A message that was waiting to be answered has been overtaken.
+    pending = WAITING.pop(channel_id, None)
+    if pending is not None:
+        pending.cancel()
+
+    async def _decide(final: bool = False):
+        spoke = LAST_BOT_REPLY.get(channel_id)
         return await decide(
             message,
             is_dm=is_dm,
@@ -585,57 +667,105 @@ async def on_message(message):
             author_name=speaker.get("name") or "",
             roster_line=roster_line(roster),
             bot_name=display_name(bot.user),
+            recent=await _recent_messages(message.channel, exclude_id=message.id),
+            reply_to=_reply_target(message),
+            bot_spoke_seconds=(time.time() - spoke) if spoke else None,
+            final=final,
+            cache_extra=f"{ROOM_VERSION.get(channel_id, 0)}:{'final' if final else 'now'}",
         )
 
+    async def _answer(decision, final: bool = False):
+        """Answer the message, with one turn at a time in this channel.
+
+        `final` says the person has stopped typing and this is the whole
+        message. It has to be carried through the second look below, or
+        the bot would ask the classifier again without the final note and
+        be told to wait a second time - and the message would never be
+        answered at all.
+        """
+        content = message.content
+        if mentioned:
+            content = content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
+        if not content:
+            content = "Hello!"
+
+        async with _channel_lock(channel_id):
+            # The room may have changed while this turn waited for its turn -
+            # somebody else may have spoken, which makes it a shared channel. The
+            # decision is taken again now, so the bot does not answer a message
+            # that was plainly meant for somebody else.
+            decision = await _decide(final=final)
+            if decision.wait or not decision.reply:
+                print(f"staying quiet in {channel_id}: {decision.reason}")
+                return
+
+            shared = TRACKER.is_shared(channel_id) if not is_dm else False
+            scopes = [str(message.author.id)]
+            write_scope = str(message.author.id)
+            if shared:
+                # A room: everybody's messages belong to the same thread, and the
+                # long-term memory is shared too.
+                scope = channel_scope(channel_id)
+                scopes.append(scope)
+                write_scope = scope
+                SHARED_CHANNELS[channel_id] = True
+                TRACKER.mark_shared(channel_id)
+
+            async with message.channel.typing():
+                result = await get_nvidia_response_full(
+                    message.author.id,
+                    content,
+                    message.channel,
+                    attachments=message.attachments,
+                    scopes=scopes,
+                    write_scope=write_scope,
+                    shared=shared,
+                    speaker=speaker,
+                    roster=roster,
+                    shape=decision.shape,
+                )
+            sent = await send_long(message, result["answer"], footer=result["footer"])
+            LAST_BOT_REPLY[channel_id] = time.time()
+            _remember_bot_messages(channel_id, sent)
+            await attach_images(message, result.get("files") or [])
+
     decision = await _decide()
+    if decision.wait:
+        # The message is not finished. Wait a moment to see whether the
+        # rest of it is coming, and answer it then if it is.
+        async def _answer_when_finished():
+            try:
+                await asyncio.sleep(WAIT_SECONDS)
+            except asyncio.CancelledError:
+                return
+            WAITING.pop(channel_id, None)
+            # If the same person said something else after this message,
+            # that newer message is the one to answer - it gets its own
+            # decision, with its own shape.
+            try:
+                async for later in message.channel.history(limit=10):
+                    if later.id == message.id:
+                        break
+                    if later.author.id == message.author.id:
+                        return
+            except Exception as exc:
+                print(f"could not check for a follow-up message: {exc}")
+            # Nothing followed it, so it was the whole message after all.
+            decision = await _decide(final=True)
+            if decision.reply and not decision.wait:
+                await _answer(decision, final=True)
+            else:
+                print(f"staying quiet in {channel_id}: {decision.reason}")
+
+        WAITING[channel_id] = asyncio.create_task(_answer_when_finished())
+        print(f"waiting in {channel_id}: the message looks unfinished")
+        return
+
     if not decision.reply:
         print(f"staying quiet in {channel_id}: {decision.reason}")
         return
 
-    content = message.content
-    if mentioned:
-        content = content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
-    if not content:
-        content = "Hello!"
-
-    async with _channel_lock(channel_id):
-        # The room may have changed while this turn waited for its turn -
-        # somebody else may have spoken, which makes it a shared channel. The
-        # decision is taken again now, so the bot does not answer a message
-        # that was plainly meant for somebody else. The classifier's answer
-        # is cached, so the second look costs nothing.
-        decision = await _decide()
-        if not decision.reply:
-            print(f"staying quiet in {channel_id}: {decision.reason}")
-            return
-
-        shared = TRACKER.is_shared(channel_id) if not is_dm else False
-        scopes = [str(message.author.id)]
-        write_scope = str(message.author.id)
-        if shared:
-            # A room: everybody's messages belong to the same thread, and the
-            # long-term memory is shared too.
-            scope = channel_scope(channel_id)
-            scopes.append(scope)
-            write_scope = scope
-            SHARED_CHANNELS[channel_id] = True
-            TRACKER.mark_shared(channel_id)
-
-        async with message.channel.typing():
-            result = await get_nvidia_response_full(
-                message.author.id,
-                content,
-                message.channel,
-                attachments=message.attachments,
-                scopes=scopes,
-                write_scope=write_scope,
-                shared=shared,
-                speaker=speaker,
-                roster=roster,
-            )
-        sent = await send_long(message, result["answer"], footer=result["footer"])
-        _remember_bot_messages(channel_id, sent)
-        await attach_images(message, result.get("files") or [])
+    await _answer(decision)
 
 
 # ---------------------------------------------------------------------------

@@ -121,6 +121,24 @@ FRESHNESS_REMINDER = (
 )
 
 
+# The model sometimes answers a question that needs a source straight out of
+# its training data. The prompt already says it must search, and most of the
+# time it does - but not every time, and a reply from memory is exactly the
+# reply that is wrong six months later.
+#
+# So the answer is checked: if the turn was a real job and nothing was
+# looked up, the model is asked once more, and this time it is told what
+# the choice is. It can still decide that the question was conversation,
+# in which case it just answers again.
+TOOL_RETRY_NOTE = (
+    "That answer came from memory. Look it up before you answer: call "
+    "web_search, then answer again with what you find. Reply to the person, "
+    "in their language, in the tone of the conversation you are already in - "
+    "not to this note - and do not mention the search, the tools, or that you "
+    "checked anything."
+)
+
+
 def _has_image(messages) -> bool:
     """Does this turn carry a picture?
 
@@ -674,7 +692,8 @@ async def _summarise_at_limit(messages: list, max_tokens: int) -> str:
 
 
 async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGENT_STEPS,
-                         tools=None, persist=True, on_step=None, max_tokens=8192):
+                         tools=None, persist=True, on_step=None, max_tokens=8192,
+                         thinking: bool = True, require_tool: bool = False):
     """Run the agent tool-calling loop until the model produces a final answer.
 
     `max_tokens` is the allowance for each step. The reasoning and the
@@ -682,6 +701,14 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     then answers, and both are counted - so the number has to leave room
     for both, or a hard question ends in a step that thinks for eight
     thousand tokens and says nothing.
+
+    `thinking` switches the reasoning off for the turn. It is off for a
+    passing remark: the answer is a line or two, and the reasoning is a
+    large part of why a reply can take a minute to arrive.
+
+    `require_tool` says the turn is a real job that should have looked
+    something up. If the model answers without calling a tool, it is
+    asked once more - not forced, but told what the choice is.
 
     Returns a dict with the answer, which tools were used, and how many
     steps it took.
@@ -705,6 +732,18 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
         if m.get("role") == "assistant" and (m.get("content") or "").strip()
     ]
 
+    # The message this turn is about. The retry below puts it back in front
+    # of the model: after the nudge the last thing in the conversation is
+    # the nudge itself, and the model has been seen to answer an older
+    # question instead of the one it was given.
+    original_request = ""
+    for _message in reversed(base_messages):
+        if _message.get("role") == "user":
+            _content = _message.get("content")
+            if isinstance(_content, str):
+                original_request = _content
+            break
+
     final_answer = ""
     tools_used = []
     step_count = 0
@@ -719,6 +758,13 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     call_counts = {}
     tool_counts = {}
     warned_tool_count = set()
+    # How many times the model has been asked to go and look something up
+    # after answering from memory. It is asked once: a second ask costs
+    # another full round of thinking for very little gain.
+    nudged = 0
+    # Whether the next step has to call a tool. The model is told to, and
+    # the step is not allowed to end without one.
+    force_tool = False
 
     while True:
         if step_count >= max_steps:
@@ -738,9 +784,20 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
         # Try the models in order: Laguna, MiniMax, Nemotron, then Groq.
         # A turn with a picture in it skips the two that cannot look at
         # images, and goes to Nemotron first.
+        #
+        # A step that has to call a tool starts one model later: Laguna
+        # answers straight out of its memory even when it is told to call
+        # a tool, so a forced step that starts there is not forced at all.
+        step_chain = chain
+        force_now = force_tool
+        if force_now:
+            forced = [c for c in chain if c[0] != "Laguna"]
+            step_chain = forced or chain
+        force_tool = False
+
         stream = None
         last_error = None
-        for _name, client, model in chain:
+        for _name, client, model in step_chain:
             try:
                 stream = await client.chat.completions.create(
                     model=model,
@@ -750,8 +807,8 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                     top_p=0.95,
                     stream=True,
                     tools=tools,
-                    tool_choice="auto",
-                    extra_body=extra_body_for(_name),
+                    tool_choice="required" if force_now else "auto",
+                    extra_body=extra_body_for(_name, thinking=thinking),
                 )
                 used_model = model
                 break
@@ -856,11 +913,11 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                 final_answer += step_content
             else:
                 final_answer = step_content
-            if persist and user_id is not None:
-                await db_add_message(user_id, "assistant", step_content)
 
         if not tool_calls_accum:
             if finish_reason == "length":
+                if persist and user_id is not None:
+                    await db_add_message(user_id, "assistant", step_content)
                 messages.append({"role": "assistant", "content": step_content})
                 if not step_content.strip() and step_reasoning:
                     # The whole allowance went on thinking and nothing was
@@ -882,6 +939,46 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                         "content": "Continue your response from where you left off.",
                     })
                 continue
+
+            if require_tool and not tools_used and nudged < 1:
+                # The model answered a real job out of its memory. Before
+                # making it do the work again, ask whether this message
+                # asked for something that has to come from a source: a
+                # question that needs a lookup, or a person talking about
+                # their day. The model tells them apart, and a personal
+                # message is left alone.
+                nudged += 1
+                wanted = False
+                try:
+                    from presence import needs_lookup
+
+                    wanted = await needs_lookup(original_request)
+                except Exception as exc:
+                    print(f"the lookup check failed: {exc}")
+
+                if not wanted:
+                    # It was conversation, or something that needs no
+                    # source. The answer stands.
+                    if persist and user_id is not None:
+                        await db_add_message(user_id, "assistant", step_content)
+                    break
+
+                # It asked for something with an answer, so the answer has
+                # to come from a source. The next step is not allowed to
+                # end without a tool call.
+                force_tool = True
+                retry = TOOL_RETRY_NOTE
+                if original_request:
+                    retry += (
+                        "\n\nThe message to answer is this one, and no "
+                        f"other:\n\"{original_request[:1500]}\""
+                    )
+                messages.append({"role": "assistant", "content": step_content})
+                messages.append({"role": "user", "content": retry})
+                continue
+
+            if persist and user_id is not None:
+                await db_add_message(user_id, "assistant", step_content)
             break
 
         # Send one status message per step, not per tool call. The model often
@@ -1053,7 +1150,7 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
 async def get_nvidia_response_full(user_id, user_message, channel=None,
                                    attachments=None, scopes=None,
                                    write_scope=None, shared: bool = False,
-                                   speaker=None, roster=None):
+                                   speaker=None, roster=None, shape: str = ""):
     """Answer a message, persist the exchange, and return the answer plus metadata.
 
     `scopes` are the context keys to read from. A channel with more than one
@@ -1066,6 +1163,10 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
     `speaker` and `roster` say who is being talked to and who else is in
     the room. They are read from the channel, not from a list in the code,
     so the bot always knows the names it needs.
+
+    `shape` is what the presence classifier made of the message: "aside",
+    "question" or "deep". It decides how long the reply should be, and
+    whether the model needs to think before it answers.
     """
     _check_delegation_tool()
     scopes = [str(s) for s in (scopes or [user_id]) if s]
@@ -1138,6 +1239,24 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
     except Exception as exc:
         print(f"could not add the turn note: {exc}")
 
+    # How big a reply this turn wants. A person answers in proportion: a
+    # remark made in passing gets a line back, and the same note applied
+    # to a question makes the voice worse, so only a passing remark gets
+    # one. The note sits beside the message, where a note is read.
+    if shape == "aside":
+        messages.insert(len(messages) - 1, {
+            "role": "system",
+            "content": (
+                "[This is a passing remark, not a prompt for an essay. "
+                "Answer it at its own size: a line or two, then stop. No "
+                "closing reflection, no summary of what they said.]"
+            ),
+        })
+
+    # The reasoning is what makes a reply slow, and a passing remark does
+    # not need it. Everything else gets the full treatment.
+    thinking = shape != "aside"
+
     # If the question depends on the world as it is now, remind the model to
     # source and verify before answering. Cheap to add, and it stops the model
     # confidently answering from stale training data.
@@ -1195,12 +1314,21 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
     # plots) can be attached to the reply automatically.
     tracker: list[str] = []
     token = written_files.set(tracker)
+
+    # Whether this turn should have looked something up. The presence
+    # classifier has already said whether the message is a real job ("deep"),
+    # so this is a model's opinion and not a list of words; the freshness
+    # check is the older one, kept for the turns that never reach a room.
+    require_tool = shape == "deep" or needs_fresh_data(user_message)
+
     try:
         result = await run_agent_loop(
             messages,
             user_id=write_scope,
             channel=channel,
             max_steps=MAX_AGENT_STEPS,
+            thinking=thinking,
+            require_tool=require_tool,
         )
     finally:
         written_files.reset(token)
