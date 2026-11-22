@@ -45,10 +45,11 @@ _api = None
 _api_failed = False
 _api_error = ""
 
-# Fallback credentials, used when no environment variable reaches the process.
-# The environment variable still wins, so this can be deleted once the token is
-# reliably set in the deployment.
-HARDCODED_TOKEN = "KGAT_438c1c9ee21b06baddc33a0b15336985"
+# The Kaggle credentials are read from the environment (KAGGLE_API_TOKEN),
+# from the legacy username/key pair, or from ~/.kaggle/kaggle.json.
+# They are deliberately not in this file: a token that lives in the source
+# is a token that ends up in the repository, in every copy of it, and in
+# every screenshot of it.
 
 
 def _find_token() -> tuple[str, str]:
@@ -57,8 +58,6 @@ def _find_token() -> tuple[str, str]:
         value = (os.getenv(name) or "").strip()
         if value:
             return value, name
-    if HARDCODED_TOKEN:
-        return HARDCODED_TOKEN, "built-in fallback"
     return "", ""
 
 
@@ -114,15 +113,14 @@ def force_refresh() -> None:
 def kaggle_status() -> dict:
     """A plain-English report of why Kaggle is or isn't available.
 
-    Use this to debug: it checks the env var, the hardcoded fallback, the
+    Use this to debug: it checks the env var, the legacy key pair, the
     config file, and a live authentication attempt.
     """
     token, name = _find_token()
     env_set = bool(os.getenv("KAGGLE_API_TOKEN"))
     report = {
         "env_KAGGLE_API_TOKEN_set": env_set,
-        "credentials_source": name or "none",
-        "hardcoded_fallback_present": bool(HARDCODED_TOKEN),
+        "credentials_source": credentials_source() or "none",
         "legacy_key_present": _has_legacy_key(),
         "config_file_present": _has_config_file(),
         "authenticated": False,
@@ -429,6 +427,16 @@ def _carry_preamble(state_dir: str) -> tuple[str, list[str]]:
     lines = ["import base64, os, pathlib"]
     carried = []
     total = 0
+    # The kernel's working directory. Kaggle runs a script from
+    # /kaggle/working, but the path is spelled out rather than left to the
+    # current directory, so the file is where the code expects it even if
+    # the kernel starts the script from somewhere else.
+    #
+    # The brackets around the choice matter: without them Python reads it
+    # as "path, or else write the file", so whenever the directory exists
+    # - which is always - nothing is written at all.
+    target = ("(pathlib.Path('/kaggle/working') "
+              "if pathlib.Path('/kaggle/working').is_dir() else pathlib.Path('.'))")
     for name in names:
         path = os.path.join(state_dir, name)
         try:
@@ -442,7 +450,7 @@ def _carry_preamble(state_dir: str) -> tuple[str, list[str]]:
 
         blob = base64.b64encode(data).decode("ascii")
         lines.append(
-            f"pathlib.Path({name!r}).write_bytes(base64.b64decode({blob!r}))"
+            f"{target}.joinpath({name!r}).write_bytes(base64.b64decode({blob!r}))"
         )
         carried.append(name)
         total += size
@@ -598,10 +606,13 @@ def _run_sync(code: str, timeout: int, accelerator: str, datasets: list,
             "saved": saved,
             "carried": carried,
             "state": state,
+            "status": state,
+            "success": state == "COMPLETE" and not failure,
             "failure": failure,
             "elapsed": round(elapsed, 1),
             "push_seconds": round(pushed, 2),
             "ref": ref,
+            "state_dir": state_dir,
         }
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -619,24 +630,45 @@ async def run_code(code: str, timeout: int = 600, accelerator: str = "",
     Kaggle dataset refs to mount at /kaggle/input/<ref>.
 
     `state_dir` is where the run's files are kept. They are pushed into the
-    next run, so consecutive runs can build on each other.
+    next run, so consecutive runs can build on each other. When it is not
+    given, the shared state directory under the workspace is used - without
+    this the files of a run are thrown away and the next run starts from
+    nothing, which is what made the bot rebuild the same pipeline over
+    and over.
     """
     if not (code or "").strip():
         return {"error": "no code given"}
 
+    # The shared state directory, unless the caller wants its own.
+    state_dir = _state_dir(state_dir)
+
+    # Check circuit breaker for known failures
+    if _is_circuit_open("kaggle"):
+        return {"error": "Kaggle service is temporarily unavailable (circuit breaker open)"}
+
     # If every kernel in the pool is busy, wait for one rather than failing.
     for attempt in range(12):
         try:
-            return await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 _run_sync, code, timeout, accelerator or "", datasets or [],
                 label, state_dir
             )
+            # Success: reset circuit breaker
+            _reset_circuit("kaggle")
+            return result
         except RuntimeError as exc:
             if "busy" not in str(exc):
                 return {"error": str(exc)}
             if attempt == 11:
                 return {"error": str(exc)}
             await asyncio.sleep(5)
+        except Exception as exc:
+            # Record failure for circuit breaker
+            _record_failure("kaggle", str(exc))
+            if attempt == 11:
+                return {"error": str(exc)}
+            await asyncio.sleep(2 ** min(attempt, 4))  # Exponential backoff
+    
     return {"error": "could not get a Kaggle kernel"}
 
 
@@ -649,6 +681,46 @@ _NOISE = (
     "cells[i][c]",
     "text = re.sub",
 )
+
+
+"""Circuit breaker pattern for external service resilience."""
+_CIRCUIT_BREAKERS = {}
+_CIRCUIT_FAILURES = {}
+_CIRCUIT_FAILURE_COUNTS = {}
+
+
+def _is_circuit_open(service: str) -> bool:
+    """Check if circuit breaker is open for a service."""
+    import time
+    breaker = _CIRCUIT_BREAKERS.get(service, {})
+    if not breaker:
+        return False
+    if breaker.get("failures", 0) >= breaker.get("threshold", 5):
+        if time.time() - breaker.get("last_failure", 0) < breaker.get("cooldown", 60):
+            return True
+        # Reset after cooldown
+        _reset_circuit(service)
+    return False
+
+
+def _record_failure(service: str, error: str):
+    """Record a failure for circuit breaker."""
+    import time
+    failures = _CIRCUIT_FAILURE_COUNTS.get(service, 0) + 1
+    _CIRCUIT_FAILURE_COUNTS[service] = failures
+    _CIRCUIT_BREAKERS[service] = {
+        "failures": failures,
+        "last_failure": time.time(),
+        "threshold": 5,
+        "cooldown": 60
+    }
+    print(f"circuit breaker: {service} failure #{failures} - {error[:100]}")
+
+
+def _reset_circuit(service: str):
+    """Reset circuit breaker after success or cooldown."""
+    _CIRCUIT_BREAKERS.pop(service, None)
+    _CIRCUIT_FAILURE_COUNTS.pop(service, None)
 
 
 def _clean_stderr(text: str) -> str:
@@ -695,6 +767,12 @@ def format_output(result: dict, max_chars: int = 8000, state_rel: str = "") -> s
         )
     if result.get("failure"):
         parts.append(f"[failed] {result['failure']}")
+    elif result.get("state") and result["state"] not in ("COMPLETE",):
+        # The kernel stopped without saying why - say that much rather than
+        # let it look like the script simply printed nothing.
+        parts.append(f"[the kernel ended with status {result['state']}]")
+    if result.get("success") is False and not result.get("error"):
+        parts.append("[the run did not finish successfully]")
 
     text = "\n".join(parts).strip() or "(no output)"
     if len(text) > max_chars:

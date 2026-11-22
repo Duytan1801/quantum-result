@@ -16,6 +16,8 @@ import xml.etree.ElementTree as ET
 
 import httpx
 
+from cache import CACHES, normalize_key
+
 SEARCH_TIMEOUT = 30
 DETAILS_TIMEOUT = 30
 HTTP_TIMEOUT = 25.0
@@ -265,11 +267,24 @@ _SOURCES = (
 
 
 async def search_scholar(query: str, limit: int = 5, year: int = 0) -> str:
-    """Search academic literature and format the hits."""
+    """Search academic literature and format the hits.
+
+    A search walks four sources in turn - Google Scholar, OpenAlex,
+    arXiv, Crossref - and the one that answers is usually the last one.
+    That makes it the slowest thing the bot does, and people ask for the
+    same paper repeatedly. The result is cached for a day: a paper does
+    not change, and the failures are not cached, so a source that was
+    briefly down is tried again next time.
+    """
     query = (query or "").strip()
     if not query:
         return "Error: no search query given."
     limit = max(1, min(int(limit or 5), 15))
+
+    key = f"{normalize_key(query)}|{limit}|{int(year or 0)}"
+    cached = CACHES.get("papers", key)
+    if cached is not None:
+        return cached
 
     problems = []
     for name, finder in _SOURCES:
@@ -290,7 +305,9 @@ async def search_scholar(query: str, limit: int = 5, year: int = 0) -> str:
         if year:
             header += f" [year {year}]"
         body = "\n\n".join(_format_paper(d, i + 1) for i, d in enumerate(papers))
-        return header + ":\n\n" + body
+        result = header + ":\n\n" + body
+        CACHES.put("papers", key, result)
+        return result
 
     detail = ("; ".join(problems)) if problems else "no source answered"
     return (f"No papers found for '{query}'. "

@@ -14,12 +14,14 @@ import asyncio
 
 import httpx
 
+from cache import CACHES
 from config import HUGGINGFACE_TOKEN
 
-# Used when no environment variable reaches the process. The environment
-# variable still wins, so this can be deleted once the token is reliably set
-# in the deployment.
-HARDCODED_TOKEN = "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"
+# The Hub token is read from the environment (HUGGINGFACE_TOKEN or HF_TOKEN).
+# It is deliberately not in this file: a token that lives in the source is a
+# token that ends up in the repository, in every copy of it, and in every
+# screenshot of it. The Hub is perfectly usable without one for everything
+# that is public, so a missing token is not a failure - only a limitation.
 
 HUB_URL = "https://huggingface.co"
 TIMEOUT = 30.0
@@ -64,7 +66,7 @@ def token_prompt() -> str:
 
 
 def token() -> str:
-    return HUGGINGFACE_TOKEN or HARDCODED_TOKEN
+    return HUGGINGFACE_TOKEN or ""
 
 
 def _headers(accept: str = "application/json") -> dict:
@@ -98,6 +100,15 @@ def _note_bad_token(status: int, body: str = "") -> None:
 
 
 async def _get_json(url: str, params: dict = None) -> list | dict:
+    # Model cards and search results on the Hub change rarely, and the bot
+    # asks about the same models over and over. The cache is keyed on the
+    # URL and the parameters, and an hour is short enough that a model
+    # somebody uploaded this morning is not invisible all afternoon.
+    key = f"{url}|{sorted((params or {}).items())}"
+    cached = CACHES.get("hub", key)
+    if cached is not None:
+        return cached
+
     async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(url, params=params, headers=_headers())
         if resp.status_code in (401, 403):
@@ -107,17 +118,28 @@ async def _get_json(url: str, params: dict = None) -> list | dict:
             resp = await client.get(url, params=params,
                                     headers={"Accept": "application/json"})
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+
+    CACHES.put("hub", key, data)
+    return data
 
 
 async def _get_text(url: str, accept: str = "text/plain") -> str:
+    key = f"text|{url}|{accept}"
+    cached = CACHES.get("hub", key)
+    if cached is not None:
+        return cached
+
     async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(url, headers=_headers(accept))
         if resp.status_code in (401, 403):
             _note_bad_token(resp.status_code, resp.text)
             resp = await client.get(url, headers={"Accept": accept})
         resp.raise_for_status()
-        return resp.text
+        text = resp.text
+
+    CACHES.put("hub", key, text)
+    return text
 
 
 def _repo_line(item: dict, index: int) -> str:

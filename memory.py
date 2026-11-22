@@ -32,9 +32,11 @@ import json
 import os
 import re
 import time
+import unicodedata
 
 import httpx
 
+from cache import CACHES
 from config import NVIDIA_API_KEY, NVIDIA_API_URL, provider_chain
 
 # Benchmarked against the other NVIDIA embedding models on real memories:
@@ -57,6 +59,12 @@ _active_model_checked = False
 
 # Models that stopped answering, and when they may be tried again.
 _dropped_until: dict[str, float] = {}
+
+# Which model the stored memories are in, and when that was last looked at.
+# The store decides the model, so this is read before the probe.
+_stored_model_cache = ""
+_stored_model_checked_at = 0.0
+STORED_MODEL_TTL = 300.0
 
 # How long a model that failed is left alone before it is tried again.
 MODEL_RETRY_AFTER = float(os.getenv("MEMORY_MODEL_RETRY_AFTER", "3600"))
@@ -102,9 +110,16 @@ _available_checked_at = 0.0
 REPROBE_SECONDS = 300
 
 # Queries are often repeated ("what did I ask you to simulate?"), and each
-# embedding costs about half a second. A small cache makes the repeat free.
-_QUERY_CACHE: dict[str, list[float]] = {}
-_QUERY_CACHE_MAX = 256
+# embedding costs about half a second. The shared cache makes the repeat
+# free. It has a time limit, so an embedding made with one model does not
+# outlive the model it was made with, and it is thread-safe, because the
+# embedding call runs in a worker thread.
+def _cache_get(key: str):
+    return CACHES.get("embed", key)
+
+
+def _cache_put(key: str, value: list[float]):
+    CACHES.put("embed", key, value)
 
 # The embeddings API is occasionally slow. A call is retried rather than
 # being allowed to fail the turn, but it must not hang for a minute either.
@@ -121,14 +136,11 @@ PROBE_TIMEOUT = float(os.getenv("MEMORY_PROBE_TIMEOUT", "45"))
 
 
 def _cache_get(key: str):
-    return _QUERY_CACHE.get(key)
+    return CACHES.get("embed", key)
 
 
 def _cache_put(key: str, value: list[float]):
-    if len(_QUERY_CACHE) >= _QUERY_CACHE_MAX:
-        # Drop the oldest entry; dicts keep insertion order.
-        _QUERY_CACHE.pop(next(iter(_QUERY_CACHE)))
-    _QUERY_CACHE[key] = value
+    CACHES.put("embed", key, value)
 
 
 async def is_available() -> bool:
@@ -179,16 +191,54 @@ async def _probe_model(model: str) -> bool:
         return False
 
 
+async def _stored_model() -> str:
+    """Which embedding model are the stored memories actually in?
+
+    Vectors from two different models are not comparable, so this decides
+    what the whole store is in. It is the one thing that has to be right:
+    a search that compares a 3.5 query against 3.0 memories returns
+    nonsense, and silently so - it looks like the bot has forgotten
+    everything.
+    """
+    global _stored_model_cache, _stored_model_checked_at
+
+    now = time.monotonic()
+    if (_stored_model_checked_at
+            and now - _stored_model_checked_at < STORED_MODEL_TTL):
+        return _stored_model_cache
+
+    _stored_model_checked_at = now
+    try:
+        from storage import supabase
+
+        resp = supabase.table(MEMORY_TABLE).select("embed_model").limit(200).execute()
+        rows = [r.get("embed_model") for r in (resp.data or []) if r.get("embed_model")]
+    except Exception as exc:
+        print(f"could not read the stored embedding model: {exc}")
+        return _stored_model_cache
+
+    if rows:
+        # The model most of the memories are in.
+        counts = {}
+        for m in rows:
+            counts[m] = counts.get(m, 0) + 1
+        _stored_model_cache = max(counts, key=counts.get)
+    return _stored_model_cache
+
+
 async def active_model(force: bool = False) -> str:
     """The embedding model to use, settled by a probe.
 
-    The preferred model is tried first. If it does not answer, the backup is
-    used instead. The choice is then kept, so every memory is written and
-    searched with the same model.
+    The model the store is already in comes first. That sounds like a
+    small thing, and it is not: vectors from different models cannot be
+    compared, so switching models means re-embedding every memory. If
+    the probe simply took whichever model answered fastest, a preferred
+    model that answers now and then would quietly turn the whole store
+    into noise twice a day.
 
-    A model that has already been dropped is not tried again for a while.
-    The preferred model is currently answering only now and then, and
-    flipping back and forth would mean re-embedding every memory each time.
+    So the store decides. The preferred model is only chosen when the
+    store is empty, or when the model the store is in has stopped
+    answering.
     """
     global _active_embed_model, _active_model_checked
 
@@ -198,7 +248,16 @@ async def active_model(force: bool = False) -> str:
     _active_model_checked = True
     now = time.monotonic()
 
+    stored = await _stored_model()
+    candidates = []
+    if stored in (EMBED_MODEL, EMBED_MODEL_FALLBACK):
+        # The store is in this model, so this is the one to keep using.
+        candidates.append(stored)
     for candidate in (EMBED_MODEL, EMBED_MODEL_FALLBACK):
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    for candidate in candidates:
         if _dropped_until.get(candidate, 0) > now:
             # It was dropped recently; leave it alone for now.
             continue
@@ -858,4 +917,216 @@ def format_memories(memories: list[dict], shared: bool = False) -> str:
         "\n\nRelevant things you remember from earlier conversations with "
         f"{who} (retrieved automatically - treat as established fact unless "
         "contradicted by something newer):\n" + "\n".join(lines)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Relationship impressions
+# ---------------------------------------------------------------------------
+#
+# A flat list of memories is the wrong shape for the things that decide how
+# to *be* with somebody. "Damian cares about Jade a lot, and wants the bot
+# to be warm, gentle and human with her rather than clinical" is not a fact
+# to recall - it is an instruction about tone, and it is easily buried in a
+# list of unrelated notes.
+#
+# So the notes about the people in the room are pulled out and regrouped by
+# person, ahead of everything else in the prompt. Kaiacord calls these
+# relationship impressions, and the point of them is the same: what you know
+# about how two people relate should change how you speak to them, without
+# ever being said out loud.
+#
+# They are gathered by name rather than by similarity, so the impression is
+# there even when the message being answered has nothing to do with it.
+
+# The kinds that say something about how to treat a person. A technical
+# fact about a company is not an impression.
+_IMPRESSION_KINDS = ("fact", "preference", "decision", "relationship")
+
+# Words that mark a note as being about the person rather than about a
+# subject they mentioned.
+_PERSON_MARKERS = (
+    "prefers", "prefer", "wants", "does not want", "doesn't want",
+    "cares", "needs", "likes", "dislikes", "is on her period", "is on his period",
+    "is an ", "is a ", "identifies as", "mentioned", "asked", "wrote",
+    "relationship", "situationship", "together", "feel",
+)
+
+
+def _person_names(entry: dict) -> list[str]:
+    """The names a person can be called, lowercased.
+
+    The name in Discord is often decorated - "𝐣𝐚𝐝𝐞_𝐦𝟖" - and the plain
+    form of it is "jade_m8", but a note written about her says "Jade".
+    So each name contributes its pieces as well: "jade" comes out of
+    "jade_m8", and a note that says "Jade" is then recognised.
+    """
+    names = []
+    for key in ("name", "plain", "global_name", "display_name"):
+        value = (entry or {}).get(key)
+        if not value:
+            continue
+        value = str(value).strip()
+        if not value:
+            continue
+        variants = {value.lower()}
+        try:
+            # The decorated letters normalise to plain ASCII: the
+            # mathematical bold "𝐣𝐚𝐝𝐞_𝐦𝟖" is "jade_m8".
+            variants.add(unicodedata.normalize("NFKC", value).strip().lower())
+        except Exception:
+            pass
+        for variant in variants:
+            if variant and variant not in names:
+                names.append(variant)
+            # The pieces of the name: "jade" and "m8" out of "jade_m8".
+            for piece in re.split(r"[^a-z0-9]+", variant):
+                if len(piece) >= 3 and piece.isalpha() and piece not in names:
+                    names.append(piece)
+    return names
+
+
+def _mentions(text: str, names: list[str]) -> bool:
+    """Does this note talk about this person?"""
+    lowered = (text or "").lower()
+    for name in names:
+        if not name or len(name) < 2:
+            continue
+        if name in lowered:
+            return True
+    return False
+
+
+def _person_impression(notes: list[str]) -> str:
+    """One line about a person, built from the notes about them.
+
+    The notes that come first are the ones that say the most about the
+    person - how they feel, what they want, how they relate - rather than
+    the longest one, which is often a note about a task they happened to
+    mention.
+    """
+    def score(note: str) -> tuple:
+        low = note.lower()
+        markers = sum(1 for marker in _PERSON_MARKERS if marker in low)
+        # The closer the note is to being about the person, the higher it
+        # scores; then the longer one wins, because it says more.
+        return (markers, len(note))
+
+    ordered = sorted(notes, key=score, reverse=True)
+    seen = []
+    for note in ordered:
+        low = note.lower()
+        if any(low[:60] in other.lower() for other in seen):
+            continue
+        seen.append(note)
+        if len(seen) >= 3:
+            break
+    return " ".join(seen)
+
+
+def _person_label(entry: dict) -> str:
+    """The name to call somebody by in the prompt.
+
+    The plain form of a decorated Discord name is "jade_m8", and the tag
+    at the end of it is not a name - it is a handle. So it comes off, and
+    what is left is the name a person would recognise.
+    """
+    plain = (entry or {}).get("plain") or ""
+    name = (entry or {}).get("name") or ""
+    label = plain or name
+    label = re.sub(r"_[a-z0-9]{1,4}$", "", label, flags=re.IGNORECASE).strip()
+    if not label:
+        label = name
+    # A name that is all lowercase reads better with a capital.
+    if label.isalpha() and label.islower():
+        label = label.capitalize()
+    return label or "this person"
+
+
+async def build_impressions(scopes: list[str], speaker=None,
+                            roster=None) -> str:
+    """Build the "how to be with each person" block for this turn.
+
+    The notes are read straight out of the store by name, rather than
+    through the embedding search, because the notes that decide the tone
+    are exactly the ones a similarity search leaves out when the message
+    is not about them.
+    """
+    people = []
+    seen_ids = set()
+    for entry in ([speaker] if speaker else []) + list(roster or []):
+        if not entry:
+            continue
+        # The speaker is usually in the roster as well; they get one line.
+        person_id = str(entry.get("id") or "")
+        if person_id and person_id in seen_ids:
+            continue
+        if person_id:
+            seen_ids.add(person_id)
+        names = _person_names(entry)
+        if not names:
+            continue
+        people.append({"names": names, "label": _person_label(entry)})
+    if not people:
+        return ""
+
+    # Gather the notes about these people from the store.
+    scope_keys = [str(s) for s in (scopes or []) if s]
+    notes = []
+    try:
+        from storage import supabase
+
+        for scope in scope_keys:
+            resp = await asyncio.to_thread(
+                lambda s=scope: supabase.table(MEMORY_TABLE)
+                .select("kind,content")
+                .eq("user_id", s)
+                .order("created_at", desc=True)
+                .limit(400)
+                .execute()
+            )
+            for row in (resp.data or []):
+                content = (row.get("content") or "").strip()
+                if content:
+                    notes.append((row.get("kind", "fact"), content))
+    except Exception as exc:
+        print(f"could not gather impressions: {exc}")
+        return ""
+
+    if not notes:
+        return ""
+
+    lines = []
+    for person in people:
+        about = []
+        for kind, content in notes:
+            if kind not in _IMPRESSION_KINDS:
+                continue
+            if not _mentions(content, person["names"]):
+                continue
+            low = content.lower()
+            # A note only counts as an impression if it is about the person,
+            # not about a subject they happened to mention.
+            if not any(marker in low for marker in _PERSON_MARKERS):
+                continue
+            about.append(content)
+        if not about:
+            continue
+        impression = _person_impression(about)
+        if impression:
+            lines.append(f"- {person['label']}: {impression}")
+
+    if not lines:
+        return ""
+
+    return (
+        "\n\nHow you are with each person in this room. These notes decide "
+        "your tone, not your content - use them to be the right kind of "
+        "present, and nothing else:\n"
+        "- Never say any of this out loud, never quote it back to them, and "
+        "never tell anybody what their relationship is. They know. Knowing "
+        "it is what lets you be careful with them.\n"
+        "- The names in these notes are the people's own names. You are the "
+        "assistant - you are not Lain, and you are not Damian.\n"
+        + "\n".join(lines)
     )

@@ -82,6 +82,13 @@ async def send_long(target, content: str, code_block: bool = False, footer: str 
 
     sent = []
     render_dir = None
+
+    # Nothing to say. Discord rejects an empty message, and sending one
+    # would be worse than saying nothing at all - the guard can empty a
+    # reply when the whole of it was scaffolding.
+    if not (content or "").strip():
+        return sent
+
     parts = [("text", content)]
     if render_math and not code_block:
         from mathrender import process_math

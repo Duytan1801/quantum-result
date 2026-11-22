@@ -3,10 +3,13 @@
 import asyncio
 import difflib
 import json
+import logging
 import os
 import re
+import time
 
 import config
+from cache import CACHES
 from config import (
     HISTORY_ROWS,
     MAX_AGENT_STEPS,
@@ -50,6 +53,9 @@ from tools import (
     written_files,
 )
 from vision import build_image_content
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 # Status label shown in Discord for each tool.
 STATUS_LABELS = {
@@ -131,6 +137,70 @@ def _has_image(messages) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# The answer cache
+# ---------------------------------------------------------------------------
+#
+# In a room, the same question comes up again and again. "What is filtering
+# theory?" gets asked once on Monday and again on Wednesday, by a different
+# person, expecting the same answer. Each of those is a full agent loop: a
+# search, a couple of model calls, an embedding, and ten seconds of waiting.
+#
+# So the answer is kept for ten minutes and handed back when the same
+# person asks the same thing in the same room.
+#
+# Four things are deliberately NOT cached, because getting them wrong would
+# be worse than being slow:
+#
+# - A personal reply. If somebody says they are upset and says it again
+#   two minutes later, they want a fresh answer, not the same words. Only
+#   a reply that came out of a tool is kept, because that one was a
+#   factual answer rather than a conversation.
+# - A question about something that changes. "What is the share price
+#   today" is never served from a cache.
+# - A reply that produced a file. The file was attached to the first
+#   reply; a cached reply would arrive with the text and nothing else.
+# - A question that started a background agent. Its result arrives later,
+#   on its own, and must not be pretended into a reply that is not there.
+#
+# The key carries the speaker and the room, so an answer given to one
+# person is never handed to another.
+
+def _answer_cache_key(user_message: str, speaker, write_scope: str,
+                      user_id) -> str:
+    """The key for the answer cache, or "" if this turn cannot be cached."""
+    if not (user_message or "").strip():
+        return ""
+    who = str((speaker or {}).get("id") or user_id or "")
+    # The message, tidied so that "what is x ?" and "what is x" are the
+    # same question.
+    text = " ".join((user_message or "").split()).lower()
+    return f"{who}|{write_scope}|{text}"
+
+
+def _cacheable(result: dict, user_message: str) -> bool:
+    """Should this turn be kept for ten minutes?"""
+    answer = (result.get("answer") or "").strip()
+    if not answer or answer.startswith("LLM "):
+        return False
+    if result.get("files"):
+        # The file was attached to the first reply. A cached reply would
+        # come with the words and nothing else.
+        return False
+    tools = set(result.get("tools_used") or [])
+    if "start_agent_task" in tools:
+        # The real result is posted later, by the agent.
+        return False
+    if not tools:
+        # No tool means this was a conversation, not an answer. Repeating a
+        # conversation verbatim is worse than repeating nothing.
+        return False
+    if needs_fresh_data(user_message):
+        # The answer depends on the world as it is now.
+        return False
+    return True
+
+
 def _footer_for(result: dict) -> str:
     """Build the small grey footer line: model + tools used.
 
@@ -179,8 +249,17 @@ async def _run_tool(name: str, args: dict, channel=None, user_id=None) -> str:
         if backend == "kaggle" and language == "python":
             import kaggle_backend
 
-            result = await kaggle_backend.run_code(code, timeout=600)
-            return kaggle_backend.format_output(result)
+            # The same per-user state directory as kaggle_run, so a script
+            # written with the code tool leaves its files where the next run
+            # can pick them up and where read_file can find them.
+            state_dir = os.path.join(BASE_DIR, "kaggle", str(user_id or "default"))
+
+            result = await kaggle_backend.run_code(
+                code, timeout=600, state_dir=state_dir)
+            return kaggle_backend.format_output(
+                result,
+                state_rel=os.path.relpath(state_dir, BASE_DIR),
+            )
         return await run_code_in_sandbox(code, language)
     if name == "kaggle_run":
         import kaggle_backend
@@ -307,6 +386,46 @@ async def _run_tool(name: str, args: dict, channel=None, user_id=None) -> str:
             user_id,
         )
     return f"Error: Unknown tool {name}"
+
+
+def _normalize_tool_args(args: dict) -> str:
+    """Normalize tool arguments for deduplication comparison.
+    
+    Creates a stable representation of arguments that can be compared
+    for similarity, ignoring formatting differences.
+    """
+    if not args:
+        return ""
+    
+    # Sort keys and create a stable string representation
+    try:
+        # Handle common text normalization
+        parts = []
+        for key in sorted(args.keys()):
+            value = args[key]
+            if isinstance(value, str):
+                # Normalize whitespace and strip
+                value = " ".join(value.split()).strip()[:200]
+            elif isinstance(value, (list, dict)):
+                # Truncate complex structures
+                value_str = str(value)[:200]
+            else:
+                value_str = str(value)
+            parts.append(f"{key}={value_str}")
+        return "|".join(parts)
+    except Exception:
+        return str(args)[:200]
+
+
+def _near_duplicates(call_counts: dict, name: str) -> bool:
+    """Has this tool been called with several different sets of arguments?
+
+    The log showed the model running the same search over and over with
+    the wording changed slightly each time. The results are the same, so
+    the second and third are worth calling out.
+    """
+    return sum(1 for k, v in call_counts.items()
+               if k[0] == name and v >= 1) >= 2
 
 
 def _is_failure(result: str) -> bool:
@@ -555,8 +674,14 @@ async def _summarise_at_limit(messages: list, max_tokens: int) -> str:
 
 
 async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGENT_STEPS,
-                         tools=None, persist=True, on_step=None, max_tokens=4096):
+                         tools=None, persist=True, on_step=None, max_tokens=8192):
     """Run the agent tool-calling loop until the model produces a final answer.
+
+    `max_tokens` is the allowance for each step. The reasoning and the
+    answer come out of the same allowance - the model thinks first and
+    then answers, and both are counted - so the number has to leave room
+    for both, or a hard question ends in a step that thinks for eight
+    thousand tokens and says nothing.
 
     Returns a dict with the answer, which tools were used, and how many
     steps it took.
@@ -646,6 +771,12 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
         step_content = ""
         tool_calls_accum = {}
         finish_reason = None
+        # How much thinking this step produced. The reasoning and the answer
+        # come out of the same token allowance, so a step can spend all of
+        # it thinking and answer nothing - and then the bot has nothing to
+        # send. This is how much thinking was spent, so that case can be
+        # spotted.
+        step_reasoning = 0
 
         try:
             async for chunk in stream:
@@ -660,7 +791,7 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                 # part of the answer, so it is read and dropped rather than
                 # shown to the user.
                 if getattr(delta, "reasoning_content", None):
-                    pass
+                    step_reasoning += 1
                 if chunk.choices[0].finish_reason:
                     finish_reason = chunk.choices[0].finish_reason
                 if delta.tool_calls:
@@ -730,10 +861,25 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
         if not tool_calls_accum:
             if finish_reason == "length":
                 messages.append({"role": "assistant", "content": step_content})
-                messages.append({
-                    "role": "user",
-                    "content": "Continue your response from where you left off.",
-                })
+                if not step_content.strip() and step_reasoning:
+                    # The whole allowance went on thinking and nothing was
+                    # said. The reasoning and the answer come out of the
+                    # same budget, so asking it to think harder is the one
+                    # thing that will not help: ask it to answer now.
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You used the whole token budget thinking and "
+                            "produced no answer. Stop deliberating and give "
+                            "the answer now, in a few sentences. If you "
+                            "cannot say more, say what you know."
+                        ),
+                    })
+                else:
+                    messages.append({
+                        "role": "user",
+                        "content": "Continue your response from where you left off.",
+                    })
                 continue
             break
 
@@ -770,25 +916,27 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                 # - the log showed eighteen identical Kaggle runs in a row,
                 # nearly two hours, because each one started from nothing.
                 # A call that has already succeeded does not need doing again.
-                key = (tc["name"], json.dumps(args, sort_keys=True)[:400])
+                # Enhanced deduplication: track by normalized args for smarter detection
+                normalized_args = _normalize_tool_args(args)
+                key = (tc["name"], normalized_args[:200])
                 tool_counts[tc["name"]] = tool_counts.get(tc["name"], 0) + 1
 
-                if tool_counts[tc["name"]] >= 8 and tc["name"] not in warned_tool_count:
+                # Warn after 6 calls to same tool type
+                if tool_counts[tc["name"]] >= 6 and tc["name"] not in warned_tool_count:
                     warned_tool_count.add(tc["name"])
                     messages.append({
                         "role": "user",
                         "content": (
                             f"You have called `{tc['name']}` {tool_counts[tc['name']]} "
-                            f"times in this turn. Each call is expensive. Wrap the "
-                            f"task up with what you have now rather than running "
-                            f"it again."
+                            f"times in this turn. Each call is expensive. Work with "
+                            f"the results you have rather than running it again."
                         ),
                     })
 
+                # The exact same call: it has already been made twice and
+                # worked twice, so a third one would cost a minute and
+                # change nothing.
                 if call_counts.get(key, 0) >= 2:
-                    # The same call has already succeeded twice. Running it a
-                    # third time costs another minute and changes nothing, so
-                    # it is not run - the model is told why.
                     result = (
                         f"This exact `{tc['name']}` call has already been made "
                         f"twice in this turn and produced a result both times. "
@@ -806,6 +954,15 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                             f"what you already have."
                         ),
                     })
+                # The same tool, different arguments, several times over. The
+                # results are nearly always the same.
+                elif tool_counts[tc["name"]] >= 3 and _near_duplicates(
+                        call_counts, tc["name"]):
+                    result = (
+                        f"You are calling `{tc['name']}` multiple times with "
+                        f"similar arguments in this turn. Use the tool results "
+                        f"you already have rather than making more calls."
+                    )
                 else:
                     # A tool that raises must not kill the whole turn - the
                     # model needs to see the error so it can recover or answer
@@ -863,9 +1020,26 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     # a model stuck in a groove rather than an answer, so it is asked for a
     # different one. If the second attempt is a copy too, the original stands.
     if final_answer and repeats_history(final_answer, prior_answers):
+        logger.warning(f"answer repeat detected, requesting fresh response")
         fresh = await _fresh_answer(base_messages, max_tokens)
         if fresh and not repeats_history(fresh, prior_answers):
             answer = _collapse_repeats(fresh)
+            logger.info("received non-repeating answer, using it")
+
+    # The guard. The prompt asks for a particular voice; this is what makes
+    # sure the voice that actually arrives is that one. It strips the
+    # bot-speak, the prompt echoes and the "let me know if you need anything
+    # else" - and it leaves the substance of the answer alone.
+    try:
+        from guard import sanitize_reply
+
+        answer = sanitize_reply(answer)
+    except Exception as exc:
+        logger.error(f"the guard could not check the reply: {exc}")
+
+    # Log completion metrics
+    logger.debug(f"turn completed: {step_count} steps, {len(tools_used)} tools, "
+                 f"model={used_model}, answer_len={len(answer)}")
 
     return {
         "answer": answer,
@@ -895,6 +1069,21 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
     _check_delegation_tool()
     scopes = [str(s) for s in (scopes or [user_id]) if s]
     write_scope = str(write_scope or user_id)
+
+    # The answer cache. A question that has already been answered in this
+    # room, by this person, does not need answering again.
+    cache_key = _answer_cache_key(user_message, speaker, write_scope, user_id)
+    if cache_key:
+        cached = CACHES.get("answer", cache_key)
+        if cached is not None:
+            print(f"answer cache: served '{user_message[:60]}' from the cache")
+            # The cached answer keeps its text and its footer, but it is not
+            # a fresh run: it took no steps and no tools.
+            served = dict(cached)
+            served["steps"] = 0
+            served["tools_used"] = []
+            served["cached"] = True
+            return served
 
     history = await db_get_history_multi(scopes, limit=HISTORY_ROWS)
     # The stored conversation can contain a wall of near-identical answers
@@ -959,6 +1148,19 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
         from memory import format_memories, is_available, retrieve_memories
 
         if await is_available():
+            # The relationship impressions come first, because they decide
+            # the tone of the reply and everything else is easier to get
+            # wrong once the wrong voice is set.
+            try:
+                from memory import build_impressions
+
+                impressions = await build_impressions(
+                    scopes, speaker=speaker, roster=roster)
+                if impressions:
+                    messages.insert(1, {"role": "system", "content": impressions})
+            except Exception as exc:
+                print(f"relationship impressions failed: {exc}")
+
             # The query carries the names of the people in the room, so that
             # what the bot knows about *them* comes back - not just what is
             # about the subject of the message. In a room, that is the
@@ -1005,13 +1207,16 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
     result["files"] = [p for p in tracker if os.path.exists(p)]
     result["footer"] = _footer_for(result)
 
+    # Keep the answer, if this is the kind of answer worth keeping.
+    if cache_key and _cacheable(result, user_message):
+        CACHES.put("answer", cache_key, dict(result))
+
     # Learn from this exchange in the background, so it never delays the reply.
     _schedule_memory_update(user_id, user_message, result["answer"], scopes=scopes,
                              person_name=(speaker or {}).get("plain")
                              or (speaker or {}).get("name"))
 
     return result
-
 
 def _schedule_memory_update(user_id, user_message: str, answer: str,
                             scopes: list[str] = None, person_name: str = None):

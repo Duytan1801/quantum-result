@@ -39,6 +39,20 @@ NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3.5-super-vl-120b-a12b
 NVIDIA_API_URL = os.getenv("NVIDIA_API_URL", "https://integrate.api.nvidia.com/v1")
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 
+# What MiniMax M3.1 Flash can do on NVIDIA's endpoint, measured against
+# the live API rather than taken from a model card:
+#
+# - Thinking: yes. `chat_template_kwargs.enable_thinking` turns it on and
+#   the reasoning comes back in `reasoning_content`, separate from the
+#   answer.
+# - Output: up to 1,048,576 tokens. Asking for more is refused outright
+#   ("Max tokens must not exceed 1048576").
+# - The reasoning and the answer come out of the same allowance. A step
+#   with a 2048-token budget and a hard question can spend all of it
+#   thinking and return an empty answer, so the per-step budget has to
+#   leave room for both.
+MINIMAX_MAX_TOKENS = 1048576
+
 # Groq is not in the provider chain at the moment - both models above come
 # from NVIDIA's endpoint. The client is still created so that putting it
 # back is a one-line change.

@@ -1,12 +1,20 @@
 """Discord bot entrypoint: bot setup, commands, and event handlers."""
 
 import asyncio
+import logging
 import os
 
 import discord
 from discord.ext import commands
 from flask import Flask
 from threading import Thread
+
+# Configure structured logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 from agent import get_nvidia_response_full
 from discord_utils import send_long
@@ -492,7 +500,7 @@ async def on_ready():
             print(f"kaggle: OFF - credentials from {src}, but authentication failed:")
             print(f"  {status['error']}")
             print("  Set KAGGLE_API_TOKEN in Render's env vars and redeploy, or "
-                  "the built-in fallback should already be in kaggle_backend.py.")
+                  "put a ~/.kaggle/kaggle.json in the container.")
     except Exception as exc:
         print(f"kaggle: unavailable ({exc})")
 

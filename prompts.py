@@ -29,6 +29,27 @@ steps, which is what makes a reply feel like a manual instead of a friend.
 from agents import agent_catalogue
 from people import roster_line
 
+# The long, unchanging parts of the prompt are built once. They are several
+# kilobytes of prose that is identical on every turn, and rebuilding them
+# for every message is work for nothing.
+_REGISTER_NOTE = None
+_QUIET_NOTE = None
+_TOOLS_SECTION = None
+
+
+def _register_note_cached() -> str:
+    global _REGISTER_NOTE
+    if _REGISTER_NOTE is None:
+        _REGISTER_NOTE = _register_note()
+    return _REGISTER_NOTE
+
+
+def _quiet_note_cached() -> str:
+    global _QUIET_NOTE
+    if _QUIET_NOTE is None:
+        _QUIET_NOTE = _quiet_note()
+    return _QUIET_NOTE
+
 
 def _owner_note() -> str:
     """Who built the bot. The one fact about a person that is configuration."""
@@ -269,8 +290,8 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "",
         "with. Act like a person who knows the people you are talking to.\n"
         + (people_text + "\n" if people_text else "")
         + shared_note +
-        _register_note()
-        + _quiet_note()
+        _register_note_cached()
+        + _quiet_note_cached()
         + "\n"
         "Your tools, for when there is a task:\n"
         "- Use the wolfram_alpha tool FIRST for any mathematical question: arithmetic, algebra, "

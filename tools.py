@@ -8,6 +8,7 @@ import os
 
 import httpx
 
+from cache import CACHES, normalize_key
 from config import (
     LANGSEARCH_API_KEY,
     LANGSEARCH_API_URL,
@@ -135,13 +136,25 @@ async def wolfram_alpha(query: str) -> str:
 # ---------------------------------------------------------------------------
 async def web_search(query: str, count: int = 5, freshness: str = "noLimit",
                      deep: bool = True) -> str:
-    """Search the web via LangSearch and format the results."""
+    """Search the web via LangSearch and format the results.
+
+    The results are cached for a quarter of an hour. The model very often
+    runs the same search twice - once to find out, once because it wants
+    to be sure - and each search is a slow round trip the person is
+    waiting through. Failures are not cached: a retry is worth making.
+    """
     if not LANGSEARCH_API_KEY:
         return "Error: LANGSEARCH_API_KEY not configured."
 
+    count = min(max(count, 1), 10)
+    key = f"{normalize_key(query)}|{count}|{freshness}|{int(bool(deep))}"
+    cached = CACHES.get("web_search", key)
+    if cached is not None:
+        return cached
+
     payload = {
         "query": query,
-        "count": min(max(count, 1), 10),
+        "count": count,
         "freshness": freshness,
     }
     if deep:
@@ -178,7 +191,9 @@ async def web_search(query: str, count: int = 5, freshness: str = "noLimit",
         body = src.get("text") or src.get("snippet", "")
         lines.append(f"### {name}\n{url}\n{body}")
 
-    return "\n\n".join(lines)
+    result = "\n\n".join(lines)
+    CACHES.put("web_search", key, result)
+    return result
 
 
 # ---------------------------------------------------------------------------
