@@ -236,7 +236,13 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Bot is alive"
+    # The commit that is running. Render puts it in the environment, so a
+    # deploy can be confirmed from outside instead of guessed at from the
+    # bot's behaviour.
+    commit = os.environ.get("RENDER_GIT_COMMIT", "").strip()
+    if commit:
+        return f"Bot is alive - {commit[:10]}\n"
+    return "Bot is alive\n"
 
 
 def run_flask():
