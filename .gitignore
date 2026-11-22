@@ -6,3 +6,6 @@ venv/
 .DS_Store
 bot_files/
 render/node_modules/
+tests/answer.txt
+tests/probe/
+tests/*.log
