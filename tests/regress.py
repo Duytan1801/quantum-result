@@ -207,18 +207,107 @@ print("=" * 70)
 print("THE PROMPT")
 print("=" * 70)
 
-from prompts import build_system_prompt, turn_note  # noqa: E402
+from prompts import (build_system_prompt, turn_note, voice_examples,  # noqa: E402
+                      voice_note, _kinship_note)
+
+# The roster with the ids the room actually uses: the kinship terms are
+# keyed by Discord id, so a room of made-up people gets no terms at all.
+PROMPT_ROSTER = [{"id": "909453181916938301", "name": "Jade", "plain": "Jade"},
+                 {"id": "1499211380052721684", "name": "Lain", "plain": "Lain"}]
 
 prompt = build_system_prompt({}, "", shared=False,
                               speaker={"id": "1", "name": "Jade", "plain": "Jade"},
-                              roster=[{"id": "1", "name": "Jade", "plain": "Jade"},
-                                      {"id": "2", "name": "Lain", "plain": "Lain"}])
+                              roster=PROMPT_ROSTER,
+                              bot_name="Lain",
+                              bot_aliases=("lain2", "lainy"))
 check_true("the prompt has the register rules", "Two registers" in prompt)
 check_true("the prompt has the quiet rules", "When to answer" in prompt)
 check_true("the prompt names the people", "Jade" in prompt and "Lain" in prompt)
 check_true("the turn note says how to choose", "WORKING" in turn_note())
 check_true("the prompt does not carry a credential",
            "KGAT_" not in prompt and "hf_" not in prompt.split("Hub token:")[-1][:20])
+
+# The naturalness rules. The bot said "Bạn" and "Tôi" to people who have
+# been talking as friends all evening, and that is the single thing that
+# made it read as a helpdesk instead of a friend.
+check_true("the prompt says to match the room's register",
+           "Match the register of the room" in prompt)
+check_true("the prompt names the right pronouns",
+           "anh/em/a/e" in prompt and "'Bạn'" in prompt)
+check_true("the prompt says facts do not need a formal voice",
+           "A fact does" in prompt and "formal voice" in prompt)
+check_true("the prompt forbids the confirmation-word openers",
+           "Absolutely" in prompt and "Chắc chắn rồi" in prompt)
+check_true("the prompt says not to use the name every time",
+           "tic, not warmth" in prompt)
+check_true("the prompt caps the length",
+           "Two or three sentences" in prompt)
+check_true("the prompt says to have a position",
+           "not a helpdesk" in prompt)
+check_true("the prompt follows the language of the message",
+           "language of the message you are answering" in prompt)
+
+# The bot's own name. It was asked what it is called and had no answer.
+check_true("the prompt gives the bot its name",
+           "Your name is Lain" in prompt)
+check_true("the prompt gives the other names too",
+           "lain2" in prompt and "lainy" in prompt)
+check_true("the prompt says what to answer when asked",
+           "the answer is Lain" in prompt)
+check_true("the prompt warns about the person with the same name",
+           "goes by Lain as well" in prompt)
+
+# The style anchor: real lines from the room, not adjectives.
+anchor = voice_note(voice_examples([
+    {"role": "user", "content": "mệt quá đi, hôm nay học nhiều quá"},
+    {"role": "assistant", "content": "Bạn nghỉ ngơi đi nhé"},
+    {"role": "user", "content": "E yeu lain2 hon ca toi"},
+]))
+check_true("the anchor uses the real line",
+           "mệt quá đi" in anchor)
+check_true("the anchor leaves out the bot's own replies",
+           "nghỉ ngơi" not in anchor)
+check_true("the anchor says what to take from it",
+           "Take the register from these lines" in anchor)
+check_true("the anchor says how to talk about yourself",
+           "Talk about yourself the way they talk about themselves" in anchor)
+check_true("an empty history gives no anchor", voice_note([]) == "")
+
+# The kinship terms come from the room, not from a sentence in the code
+# that goes stale when somebody new arrives.
+check_true("the prompt says Jade is 'em'",
+           "Jade is 'em'" in prompt)
+check_true("the prompt says Damian is 'anh'",
+           "Lain is 'anh'" in prompt)
+check_true("the prompt does not name the forbidden terms",
+           "'chị' is nobody" not in prompt)
+
+# A room of people the bot has no terms for gets no terms.
+check_true("a room with no known people gets no kinship terms",
+           _kinship_note([{"id": "999", "name": "Someone",
+                           "plain": "Someone"}]) == "")
+
+# The register check. A reply in the wrong voice is asked for again, and
+# the model is told what is wrong rather than the words being rewritten.
+from guard import kinship_problem, register_problem  # noqa: E402
+
+check("a formal 'Bạn' is named",
+      register_problem("Bạn muốn viết văn à? Mình giúp nhé."), "'Bạn'")
+check("a formal 'Tôi' is named",
+      register_problem("Xin lỗi. Tôi thực sự rất tiếc."), "'Tôi'")
+check("the casual voice is left alone",
+      register_problem("mệt quá đi, nghỉ ngơi đi nhé mình"), "")
+check("a letter is left alone",
+      register_problem("Kính gửi bà mẹ, con xin lỗi bạn. Tôi hứa sẽ cố gắng."),
+      "")
+check("an English reply is left alone",
+      register_problem("That sounds rough. I hope you get some rest."), "")
+check("the wrong kinship term for Jade is named",
+      kinship_problem("chị ấy cứ ngồi nghỉ đi", "em"), "'Chị'")
+check("the right kinship term is left alone",
+      kinship_problem("mình giúp em nhé", "em"), "")
+check("the wrong kinship term for Damian is named",
+      kinship_problem("em ơi, kể mình nghe", "anh"), "'Em'")
 
 print()
 print("=" * 70)

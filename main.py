@@ -22,6 +22,7 @@ from discord_utils import send_long
 from agents import AGENTS, get_agent
 from jobs import cancel_job, job_label, list_jobs, start_agent_task
 from people import (
+    bot_canonical_name,
     bot_name_variants,
     display_name,
     person as person_entry,
@@ -648,6 +649,13 @@ async def on_message(message):
     roster = await _channel_roster(channel_id, message.channel)
     speaker = person_entry(message.author)
     bot_names = bot_name_variants(bot.user)
+    # The name the bot answers to, and the other names people use for it.
+    # The bot is "lain2" on Discord; the name it gives when it is asked is
+    # "Lain" - and a person in this room goes by that name too, so the
+    # prompt has to be told about both.
+    own_name = bot_canonical_name(bot.user)
+    own_aliases = tuple(n for n in bot_names
+                         if n.lower() != own_name.lower())
 
     # The room moves on while the bot is thinking. Every message bumps the
     # version, so the second look at this message is made against the room
@@ -729,6 +737,8 @@ async def on_message(message):
                     speaker=speaker,
                     roster=roster,
                     shape=decision.shape,
+                    bot_name=own_name,
+                    bot_aliases=own_aliases,
                 )
             sent = await send_long(message, result["answer"], footer=result["footer"])
             LAST_BOT_REPLY[channel_id] = time.time()

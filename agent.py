@@ -653,6 +653,50 @@ async def _fresh_answer(messages: list, max_tokens: int) -> str:
     return ""
 
 
+async def _voice_answer(messages: list, max_tokens: int, problem: str,
+                        expected_term: str = "") -> str:
+    """Ask for the same answer again, in the register this room uses.
+
+    The voice is not fixed by rewriting the words - the bot might be
+    writing a letter, or quoting somebody, and a mechanical substitution
+    would break it. So the model is asked again, with the problem named,
+    and it keeps the content and changes the voice.
+    """
+    term_note = ""
+    if expected_term:
+        term_note = (
+            f" The person you are talking to is '{expected_term}' - that is "
+            f"the word for them, and you are 'mình'."
+        )
+    request = list(messages) + [{
+        "role": "user",
+        "content": (
+            f"Your reply used {problem}, which is the wrong register for "
+            "this room. The people here talk as anh/em/a/e and say 'mình' "
+            "for themselves; 'Bạn' and 'Tôi' make it sound like customer "
+            f"service.{term_note} Say the same thing again, in their voice, "
+            "and do not change what you are saying - only how you say it."
+        ),
+    }]
+    request = trim_context(request)
+    for _name, client, model in provider_chain():
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=request,
+                temperature=0.5,
+                max_completion_tokens=max_tokens,
+                extra_body=extra_body_for(_name),
+            )
+            content = (response.choices[0].message.content or "").strip()
+            if content:
+                return content
+        except Exception as exc:
+            print(f"could not get an answer in the right register: {exc}")
+            continue
+    return ""
+
+
 async def _summarise_at_limit(messages: list, max_tokens: int) -> str:
     """One last tool-free call, asking the model to report what it found.
 
@@ -693,7 +737,8 @@ async def _summarise_at_limit(messages: list, max_tokens: int) -> str:
 
 async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGENT_STEPS,
                          tools=None, persist=True, on_step=None, max_tokens=8192,
-                         thinking: bool = True, require_tool: bool = False):
+                         thinking: bool = True, require_tool: bool = False,
+                         speaker_id: str = ""):
     """Run the agent tool-calling loop until the model produces a final answer.
 
     `max_tokens` is the allowance for each step. The reasoning and the
@@ -709,6 +754,9 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     `require_tool` says the turn is a real job that should have looked
     something up. If the model answers without calling a tool, it is
     asked once more - not forced, but told what the choice is.
+
+    `speaker_id` is who the reply is for. It is what lets the register
+    check know which kinship term belongs in the answer.
 
     Returns a dict with the answer, which tools were used, and how many
     steps it took.
@@ -1124,6 +1172,40 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
             answer = _collapse_repeats(fresh)
             logger.info("received non-repeating answer, using it")
 
+    # The voice check. A reply in the wrong register is asked for again,
+    # because the bot's own old replies are in its context and a model
+    # copies what it reads: one reply in the wrong voice pulls the next
+    # one into the same voice, and the room gets a formal bot that cannot
+    # stop being formal.
+    expected_term = ""
+    try:
+        from config import kinship_for
+
+        found = kinship_for(speaker_id)
+        expected_term = found[0] if found else ""
+    except Exception:
+        expected_term = ""
+
+    try:
+        from guard import register_problem
+
+        problem = register_problem(answer, expected_term)
+    except Exception as exc:
+        logger.error(f"the register check failed: {exc}")
+        problem = ""
+
+    if problem:
+        logger.warning(f"wrong register ({problem}), asking again")
+        again = await _voice_answer(base_messages, max_tokens, problem,
+                                    expected_term)
+        if again and not register_problem(again, expected_term):
+            answer = _collapse_repeats(again)
+            logger.info("got an answer in the right register")
+        elif again:
+            # Still wrong. The first answer stands: a wrong-voice answer
+            # is better than no answer, and the guard still has its say.
+            logger.info("the answer came back in the wrong register again")
+
     # The guard. The prompt asks for a particular voice; this is what makes
     # sure the voice that actually arrives is that one. It strips the
     # bot-speak, the prompt echoes and the "let me know if you need anything
@@ -1150,7 +1232,8 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
 async def get_nvidia_response_full(user_id, user_message, channel=None,
                                    attachments=None, scopes=None,
                                    write_scope=None, shared: bool = False,
-                                   speaker=None, roster=None, shape: str = ""):
+                                   speaker=None, roster=None, shape: str = "",
+                                   bot_name: str = "", bot_aliases=()):
     """Answer a message, persist the exchange, and return the answer plus metadata.
 
     `scopes` are the context keys to read from. A channel with more than one
@@ -1167,6 +1250,9 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
     `shape` is what the presence classifier made of the message: "aside",
     "question" or "deep". It decides how long the reply should be, and
     whether the model needs to think before it answers.
+
+    `bot_name` and `bot_aliases` are the bot's own names, so it knows what
+    it is called.
     """
     _check_delegation_tool()
     scopes = [str(s) for s in (scopes or [user_id]) if s]
@@ -1208,7 +1294,9 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
     messages = [
         {"role": "system",
          "content": build_system_prompt(user_facts, kaggle_hint, shared=shared,
-                                        speaker=speaker, roster=roster)}
+                                        speaker=speaker, roster=roster,
+                                        bot_name=bot_name,
+                                        bot_aliases=bot_aliases)}
     ]
     messages.extend(history_to_messages(history))
 
@@ -1252,6 +1340,22 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
                 "closing reflection, no summary of what they said.]"
             ),
         })
+
+    # How the room actually talks. Examples beat adjectives: a model told
+    # "be casual" writes a generic kind of casual, while a model shown three
+    # real lines writes in the register of those lines. Neuro-sama gets this
+    # for free from a live stream of chat; here it comes from the room's
+    # own history, so the bot stops saying "Bạn" to people who have been
+    # talking like friends all evening.
+    try:
+        from prompts import voice_examples, voice_note
+
+        anchor = voice_note(voice_examples(history))
+        if anchor:
+            messages.insert(len(messages) - 1, {"role": "system",
+                                                "content": anchor})
+    except Exception as exc:
+        print(f"could not add the voice anchor: {exc}")
 
     # The reasoning is what makes a reply slow, and a passing remark does
     # not need it. Everything else gets the full treatment.
@@ -1329,6 +1433,7 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
             max_steps=MAX_AGENT_STEPS,
             thinking=thinking,
             require_tool=require_tool,
+            speaker_id=str((speaker or {}).get("id") or ""),
         )
     finally:
         written_files.reset(token)

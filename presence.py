@@ -194,6 +194,8 @@ _CLASSIFIER_EXAMPLES = (
     'Message from someone in the chat: "hows jade" -> Q2\n'
     'Message from someone in the chat: "hello?" -> Q1\n'
     'Message from someone in the chat: "can you check on the plots?" -> A3\n'
+    'Message from someone in the chat: "is there any research that shows '
+    'something?" -> A3\n'
     'Message from someone in the chat: "U hear me, lain?" -> A1\n'
     'Message from someone in the chat: "Lainy, what do you think?" -> A2\n'
     'Message from someone in the chat: "E yeu lain2 hon ca toi" -> Q1\n'

@@ -331,6 +331,136 @@ def _strip_leading_status(text: str) -> str:
     return rest
 
 
+# ---------------------------------------------------------------------------
+# The wrong register
+# ---------------------------------------------------------------------------
+#
+# The bot used to answer "Bạn muốn viết văn xin lỗi ba má à? Mình có thể
+# giúp bạn..." - formal and casual in the same sentence, in a room where
+# nobody says either. The prompt has rules about this, and rules are a
+# request, not a guarantee.
+#
+# There is a second reason to check. The bot's own old replies are in its
+# context, and a model adapts to what it reads: one reply in the wrong
+# voice makes the next one likely to be in the wrong voice too, and the
+# room ends up with a formal bot that cannot stop being formal. Measured
+# on the real prompt, a formal reply in the history made the next reply
+# formal six times out of eight.
+#
+# So the wrong register is named, and the answer is asked for again.
+
+# The formal Vietnamese pronouns. "Tôi" is the formal first person and
+# "tớ" the literary one; neither is how anybody in this room talks.
+_FORMAL_SELF_VI = ("tôi", "tớ")
+
+# The formal second person. "Bạn" is common in ordinary Vietnamese, but
+# this room does not use it - and it is the word that makes a reply sound
+# like it is being written to a customer rather than to a person.
+_FORMAL_ADDRESS_VI = ("bạn",)
+
+# A letter, a formal note, a document. These have a register of their
+# own, and the room's register does not apply inside them - a letter to
+# somebody's parents is not written the way a chat message is.
+_DOCUMENT_MARKERS = (
+    "kính gửi", "kinh gui", "kính trình", "trân trọng", "thân chào",
+    "đề nghị quý", "đề nghị anh", "đề nghị chị",
+)
+
+_VIETNAMESE = re.compile(
+    r"[ạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]"
+)
+
+
+def _has_vietnamese(text: str) -> bool:
+    """Does this reply look like Vietnamese?"""
+    return bool(_VIETNAMESE.search(text))
+
+
+def _is_document(text: str) -> bool:
+    """Is this a letter or a formal document rather than a chat message?"""
+    low = text.lower()
+    if any(marker in low for marker in _DOCUMENT_MARKERS):
+        return True
+    # A letter set out on its own lines, in italics or in a block quote.
+    if "```" in text:
+        return True
+    if re.search(r"^\s*\*[^*\n]+\*\s*$", text, flags=re.MULTILINE):
+        return True
+    return False
+
+
+# The words that follow a kinship term when it is being used as an
+# address ("chị ơi") or as the speaker talking about themselves ("chị sẽ
+# kiểm tra"). Both are wrong in this room; a term in the middle of a
+# sentence about somebody else is not necessarily wrong, so it is left
+# alone.
+_KINSHIP_FOLLOWERS = (
+    "sẽ", "đã", "đang", "có thể", "giúp", "nói", "thấy", "nghe", "biết",
+    "lo", "làm", "đợi", "muốn", "không", "đây", "ấy", "ơi", "nhé",
+)
+
+
+def kinship_problem(text: str, expected: str = "") -> str:
+    """A kinship term that does not belong in this reply.
+
+    The room has one term for each person - Damian is "anh", Jade is "em".
+    The bot calling somebody by the wrong one is the kind of mistake a
+    person does not make about somebody they know, so it is worth a second
+    try at the answer.
+
+    Only the clear cases are flagged: a term at the very start of the
+    reply, which is an address, and a term in front of a verb, which is
+    the bot talking about itself. A term in the middle of a sentence
+    about somebody else is left alone.
+    """
+    if not text or not expected:
+        return ""
+    try:
+        from config import KINSHIP_WORDS
+    except Exception:
+        KINSHIP_WORDS = ("anh", "em", "chị")
+
+    low = text.lower()
+    for term in KINSHIP_WORDS:
+        if term == expected:
+            continue
+        word = rf"(?<![\w]){re.escape(term)}(?![\w])"
+        if re.search(rf"^\s*{word}", low):
+            return f"'{term.capitalize()}'"
+        if re.search(rf"{word}\s+(?:{'|'.join(_KINSHIP_FOLLOWERS)})\b", low):
+            return f"'{term.capitalize()}'"
+    return ""
+
+
+def register_problem(text: str, expected_term: str = "") -> str:
+    """Name the wrong register in this reply, if there is one.
+
+    Returns a short description of what is wrong ("'Bạn'", "'Tôi'") for
+    the repair pass to use, or an empty string when the reply is fine.
+    An empty string is the common case, and the check is deliberately
+    narrow: it only fires on Vietnamese replies that are not letters.
+    """
+    if not text:
+        return ""
+    if not _has_vietnamese(text):
+        return ""
+    if _is_document(text):
+        return ""
+    low = text.lower()
+    found = []
+    for word in _FORMAL_SELF_VI:
+        if re.search(rf"(?<![\w]){re.escape(word)}(?![\w])", low):
+            found.append(f"'{word.capitalize()}'")
+            break
+    for word in _FORMAL_ADDRESS_VI:
+        if re.search(rf"(?<![\w]){re.escape(word)}(?![\w])", low):
+            found.append(f"'{word.capitalize()}'")
+            break
+    if found:
+        return " and ".join(found)
+    return kinship_problem(text, expected_term)
+
+
 def sanitize_reply(text: str) -> str:
     """Strip the scaffolding out of a reply.
 

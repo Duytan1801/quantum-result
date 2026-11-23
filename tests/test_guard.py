@@ -156,8 +156,10 @@ check_true("the impressions say not to say it out loud",
            "never say" in text.lower())
 check_true("the impressions say not to name the relationship",
            "relationship" in text.lower())
-check_true("the impressions say the bot is not Lain",
-           "not lain" in text.lower())
+check_true("the impressions say the notes are about them, not the bot",
+           "not about you" in text.lower())
+check_true("the impressions say never to speak as somebody else",
+           "never speak as" in text.lower())
 
 print()
 print("=" * 70)

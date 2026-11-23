@@ -947,7 +947,8 @@ _IMPRESSION_KINDS = ("fact", "preference", "decision", "relationship")
 # subject they mentioned.
 _PERSON_MARKERS = (
     "prefers", "prefer", "wants", "does not want", "doesn't want",
-    "cares", "needs", "likes", "dislikes", "is on her period", "is on his period",
+    "cares", "needs", "likes", "dislikes", "loves", "love",
+    "is on her period", "is on his period",
     "is an ", "is a ", "identifies as", "mentioned", "asked", "wrote",
     "relationship", "situationship", "together", "feel",
 )
@@ -1127,6 +1128,9 @@ async def build_impressions(scopes: list[str], speaker=None,
         "never tell anybody what their relationship is. They know. Knowing "
         "it is what lets you be careful with them.\n"
         "- The names in these notes are the people's own names. You are the "
-        "assistant - you are not Lain, and you are not Damian.\n"
+        "assistant in this room - your own name is given to you in the "
+        "prompt - and these notes are about the people in the room, not "
+        "about you. Do not take anybody's feelings, their plans or their "
+        "words as your own, and never speak as anybody else.\n"
         + "\n".join(lines)
     )

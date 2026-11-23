@@ -79,6 +79,22 @@ def roster_line(roster) -> str:
     return ", ".join(names)
 
 
+def bot_canonical_name(user) -> str:
+    """The name the bot goes by, with the decorations taken off.
+
+    The bot's Discord name is "lain2" - the 2 is there because somebody else
+    in the room is called "Lain". But the bot is Lain too, and when it is
+    asked what it is called, "Lain" is the answer it gives.
+    """
+    raw = display_name(user)
+    trimmed = re.sub(r"[\d_]+$", "", raw).strip()
+    if not trimmed:
+        trimmed = raw
+    if trimmed.islower():
+        trimmed = trimmed.capitalize()
+    return trimmed or raw
+
+
 def bot_name_variants(user) -> tuple[str, ...]:
     """The names people might call the bot by, derived from its Discord user.
 

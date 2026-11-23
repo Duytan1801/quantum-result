@@ -213,4 +213,43 @@ def extra_body_for(provider_name: str, thinking: bool = True) -> dict:
 OWNER_DISCORD_ID = os.getenv("OWNER_DISCORD_ID", "")
 OWNER_TAG = os.getenv("OWNER_TAG", "damianlewis479")
 OWNER_NAME = os.getenv("OWNER_NAME", "Damian")
-# fixed encoding
+
+
+# --- The room's kinship terms ----------------------------------------------
+#
+# The room talks in Vietnamese kinship terms. Damian calls himself "a" and
+# Jade calls herself "e", so Damian is "anh" and Jade is "em" - and the bot
+# calls them the same words.
+#
+# Getting one wrong is worse than not using one: calling Jade "anh" or
+# "chị" is the kind of mistake a person does not make about somebody they
+# know. So the prompt says which term belongs to whom, and the guard
+# checks the reply for one that does not.
+#
+# The terms are keyed by Discord id and the ids are configuration, so
+# nobody has to be edited into the code, and somebody new in the room has
+# no entry and simply gets no kinship term at all.
+DAMIAN_DISCORD_ID = (os.getenv("DAMIAN_DISCORD_ID")
+                     or os.getenv("OWNER_DISCORD_ID")
+                     or "1499211380052721684")
+JADE_DISCORD_ID = os.getenv("JADE_DISCORD_ID") or "909453181916938301"
+
+# person id -> (the term the bot uses for them, the shorter spellings)
+KINSHIP_TERMS = {
+    DAMIAN_DISCORD_ID: ("anh", ("a",)),
+    JADE_DISCORD_ID: ("em", ("e",)),
+}
+
+# Every kinship term the room uses. The guard uses this list to spot a
+# term that does not belong in a reply.
+KINSHIP_WORDS = ("anh", "em", "chị")
+
+
+def kinship_for(person_id) -> tuple[str, tuple[str, ...]] | None:
+    """The kinship term for somebody, if the room has one for them."""
+    if not person_id:
+        return None
+    entry = KINSHIP_TERMS.get(str(person_id))
+    if not entry:
+        return None
+    return entry[0], tuple(entry[1])

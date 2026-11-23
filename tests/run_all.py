@@ -38,6 +38,7 @@ LIVE = [
     "live_probe_laguna.py",
     "probe_tool_retry.py",
     "probe_personal_deep.py",
+    "probe_natural.py",
 ]
 
 

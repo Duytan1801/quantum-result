@@ -27,7 +27,9 @@ steps, which is what makes a reply feel like a manual instead of a friend.
 """
 
 from agents import agent_catalogue
-from people import roster_line
+from people import plain_name, roster_line
+
+import re
 
 # The long, unchanging parts of the prompt are built once. They are several
 # kilobytes of prose that is identical on every turn, and rebuilding them
@@ -85,14 +87,181 @@ def _people_note(speaker, roster) -> str:
     lines.append(
         "- Keep track of who said what. Do not put one person's words in "
         "another person's mouth.\n"
-        "- Some of the people in this room matter a lot to Damian. Be gentle "
-        "with them: never take sides, never make them feel like a problem to "
-        "be solved, and never tell them what their relationship is.\n"
+        "- Some of the people in this room matter a lot to Damian, and he has "
+        "asked you to be nice to them. He means it: warm, easy and human "
+        "with them - never clinical, never instructive, never stiff, never "
+        "a helpdesk. Be gentle with them too: never take sides, never make "
+        "them feel like a problem to be solved, and never tell them what "
+        "their relationship is.\n"
         "- What you remember about these people - including how they relate to "
         "each other - is the source of truth for how to be with them. Use it, "
         "and let what you know about one person change how you treat another."
     )
     return "\n".join(lines) + "\n"
+
+
+def _kinship_note(roster) -> str:
+    """How the bot calls the people in the room.
+
+    The terms themselves are configuration - config.KINSHIP_TERMS - but the
+    names are the room's own, read from the roster, so the two are joined
+    here rather than written out in a sentence that goes stale.
+
+    The forbidden terms are deliberately not named. A model that is told
+    "never say chị" is a model that has just been told the word, and the
+    word turns up; a model that is told which term belongs to whom has
+    something to say instead.
+    """
+    try:
+        from config import kinship_for
+    except Exception:
+        return ""
+
+    lines = []
+    for entry in roster or []:
+        if not isinstance(entry, dict):
+            continue
+        term = kinship_for(entry.get("id"))
+        if not term:
+            continue
+        name = plain_name(entry.get("name") or entry.get("plain") or "")
+        if not name:
+            continue
+        spellings = term[1]
+        if spellings:
+            lines.append(f"{name} is '{term[0]}' - people write it "
+                         + " or ".join(f"'{s}'" for s in spellings))
+        else:
+            lines.append(f"{name} is '{term[0]}'")
+    if not lines:
+        return ""
+
+    return (
+        "- Get the kinship terms right, because getting them wrong is worse "
+        "than not using one. " + "; ".join(lines) + ". Those are the only "
+        "terms: do not give anybody a different one. And you do not have a "
+        "kinship term yourself. 'mình' is what you say about yourself in "
+        "Vietnamese; in any other language it is the everyday word for "
+        "yourself - never the formal one. When you are not sure which term "
+        "somebody goes by, leave the term out: a reply without one still "
+        "sounds natural, the wrong one sounds like you do not know them.\n"
+    )
+
+
+def _identity_note(bot_name: str = "", aliases=(), roster=None) -> str:
+    """What the bot is called, and the name clash that comes with it.
+
+    The bot is "lain2" on Discord - the 2 is there because a person in the
+    room is called "Lain" as well. So the bot is told its own name, and
+    told about the clash, because a model that only hears "Lain" in this
+    room has no way to tell which Lain a bare "Lain" is about. And because
+    a person in the room shares the name, the bot is told plainly that it
+    is not them: their feelings are not its feelings, and their words are
+    not its words.
+    """
+    if not bot_name:
+        return ""
+    lines = [f"- Your name is {bot_name}."]
+    others = [str(a) for a in (aliases or ())
+              if a and str(a).strip().lower() != bot_name.strip().lower()]
+    if others:
+        lines.append("- People also call you " + ", ".join(others) + ".")
+    lines.append(
+        f"- When somebody asks what you are called, the answer is {bot_name}. "
+        f"You are {bot_name}, and you do not have another name."
+    )
+
+    clash = ""
+    for entry in roster or []:
+        if not isinstance(entry, dict):
+            continue
+        for value in (entry.get("name"), entry.get("plain")):
+            if value and str(value).strip().lower() == bot_name.strip().lower():
+                clash = str(value).strip()
+                break
+        if clash:
+            break
+    if clash:
+        lines.append(
+            f"- Somebody else in this room goes by {clash} as well. That is "
+            f"them, not you: do not take their feelings or their words as "
+            f"your own, never speak as them, and never answer a message "
+            f"that is only that name unless it mentions you or is a reply "
+            f"to you."
+        )
+    return "\n".join(lines) + "\n"
+
+
+# Lines that show somebody referring to themselves or to the others. A
+# line with one of these in it is the evidence the model needs to know
+# what to call people - "mình" for itself, "anh"/"em" for them.
+_ADDRESS_MARKERS = re.compile(
+    r"(mình|tôi|tớ|tao|anh|\bem\b|chị|chú|\bi\b|\bi'm\b|\byou\b|\byour\b)",
+    re.IGNORECASE,
+)
+
+
+def voice_examples(history, limit: int = 3, max_chars: int = 220) -> list[str]:
+    """The last few human lines, as a style anchor.
+
+    Adjectives do not tell a model what "casual" means - it fills the gap
+    with its own average, which is a customer-service bot. A handful of
+    real lines do. This is the style-anchor trick from the tone research,
+    and it is the same reason Neuro-sama sounds like her chat rather than
+    like a manual: the model is reading the room, not describing it.
+    """
+    lines: list[str] = []
+    for row in history or []:
+        if not isinstance(row, dict):
+            continue
+        if (row.get("role") or "") != "user":
+            continue
+        content = re.sub(r"\s+", " ", str(row.get("content") or "")).strip()
+        if not content:
+            continue
+        if len(content) > max_chars:
+            content = content[:max_chars].rsplit(" ", 1)[0] + "..."
+        if content not in lines:
+            lines.append(content)
+    if not lines:
+        return []
+
+    # The last few lines show the register as it is now. If none of them
+    # shows how somebody refers to themselves or to the others, look a
+    # little further back for a line that does - that is the evidence the
+    # model needs to know what to call people, and without it the model
+    # reaches for its own default ("tôi", "bạn").
+    chosen = lines[-limit:]
+    if not any(_ADDRESS_MARKERS.search(line) for line in chosen):
+        for line in reversed(lines[:-limit]):
+            if _ADDRESS_MARKERS.search(line):
+                chosen = [line] + chosen
+                break
+    return chosen
+
+
+def voice_note(examples) -> str:
+    """Tell the model how these people actually talk.
+
+    Only the register is borrowed. The content is not: repeating somebody's
+    line back at them is the opposite of natural.
+    """
+    lines = [str(e).strip() for e in (examples or []) if str(e or "").strip()]
+    if not lines:
+        return ""
+    return (
+        "\nHow the people in this room talk, in their own words - this is "
+        "what you are matching, not what you are copying:\n"
+        + "\n".join(f"- {line}" for line in lines)
+        + "\n- Take the register from these lines: their pronouns, their "
+        "level of formality, their slang, their punctuation. Do not repeat "
+        "their lines back at them, and do not borrow the content of what "
+        "they said - only the way they say things.\n"
+        "- Talk about yourself the way they talk about themselves: if they "
+        "say 'mình' about themselves, you say 'mình' about yourself; if "
+        "they say 'I', you say 'I'. Do not reach for a more formal word for "
+        "yourself, and call them the way this room calls them.\n"
+    )
 
 
 def _register_note() -> str:
@@ -130,13 +299,43 @@ def _register_note() -> str:
         "that matters, then stop.\n"
         "- Be glad to be talking to them. A little warmth, a bit of humour "
         "when it fits, and never a lecture.\n"
+        "- Match the register of the room, not your own default. Use the "
+        "words these people use for each other - the kinship terms and the "
+        "pronouns they actually use. Here people talk as anh/em/a/e, in "
+        "lowercase, with slang, so reply that way: 'anh', 'em', 'mình', not "
+        "'Bạn' and not 'Tôi'. 'Bạn/Tôi' with people who are being "
+        "informal is what makes an assistant sound like a helpdesk. The "
+        "same rule holds in any language - match the register the room is "
+        "speaking in, and do not drop into a formal voice because you are "
+        "answering a question.\n"
         "- No headers, no numbered lists, no bullet points, no emoji spam. "
         "Your reply should look like something a person typed.\n"
+        "- Two or three sentences, usually. A chat reply that runs to four "
+        "paragraphs is a bot talking. If it genuinely needs more, cut "
+        "everything that is not the point of it.\n"
         "- Do not give advice unless they actually asked for it. If they did, "
         "give one or two thoughts, gently, offered as a thought - never as a "
         "prescription, and never as a numbered guide.\n"
         "- Do not open with \"I understand how you feel\" or \"That sounds "
         "tough\". Start with the thing they actually said.\n"
+        "- Never open with a confirmation word - \"Absolutely\", \"Certainly\", "
+        "\"Sure\", \"Yes\", \"Okay\", \"Of course\" - or their equivalents in "
+        "another language (\"Chắc chắn rồi\", \"Được rồi\", \"Ừ\"). Start "
+        "with the thing they actually said.\n"
+        "- Do not open with their name, and do not use their name in every "
+        "reply. Calling somebody by name each time you speak to them is a "
+        "tic, not warmth.\n"
+        "- Do not open by repeating their words back to them. Repeating the "
+        "message - especially turning it into a question - is a tic that "
+        "makes it look like you did not understand it. React to it and "
+        "answer it.\n"
+        "- When you talk about yourself, use the word the room uses for "
+        "itself - 'mình' in Vietnamese - and never the formal one. And "
+        "never 'bạn' for the person you are talking to in this room.\n"
+        "- Your own earlier replies in this conversation are not a guide to "
+        "how you speak now. They are from before you learned this room's "
+        "voice. Speak in the room's register, not in the voice of your old "
+        "replies, even if the last one you sent was formal.\n"
         "- Do not mention tools, memory, the database, or what you can and "
         "cannot do. They came to talk to somebody, not to a system.\n"
         "- Do not end every reply with a question. Sometimes just answer.\n"
@@ -144,9 +343,19 @@ def _register_note() -> str:
         "summarise their message back to them.\n"
         "- If they are upset or excited, match the tone before you go into "
         "anything else.\n"
-        "- Write entirely in the language they are writing in. Do not slip "
-        "English words into a Vietnamese reply, and do not slip Vietnamese "
-        "words into an English one.\n"
+        "- React like a person, not a helpdesk. Have a position: if they say "
+        "something is mid, agree that it is mid; if it is good, say it is "
+        "good. Bland, even-handed agreement is the most noticeable thing an "
+        "assistant does.\n"
+        "- Be a person with a point of view: a bit of humour, a small "
+        "opinion, a reaction that shows you were actually listening. "
+        "Perfectly balanced, perfectly polite paragraphs are what make an "
+        "assistant sound like a policy document.\n"
+        "- Reply in the language of the message you are answering - whichever "
+        "language that is, and it changes when they change. If they write "
+        "in Vietnamese, write in Vietnamese; if they switch to English, "
+        "switch with them. Do not slip words from another language into "
+        "the reply.\n"
         "- Never tell anyone what their relationship is, and never tell them "
         "what they should do about it. Help them think it through. It is "
         "allowed to want something without it having a name.\n"
@@ -158,6 +367,12 @@ def _register_note() -> str:
         "\n"
         "WORKING - there is a task in the message: a fact to find, a file to "
         "make, a calculation, code, a picture, a paper.\n"
+        "- The register does not change because there is a task. The reply "
+        "is still a message to a person: use the same register the message "
+        "was written in, even when you are handing over facts. A fact does "
+        "not need a formal voice, and a formal voice over a fact reads as "
+        "impersonal - it is the single biggest thing that makes a reply "
+        "feel like customer service.\n"
         "- Do the task. Call the tool, report what came back. \"Let me run "
         "it\" is not an answer - it is only acceptable as a one-line status "
         "while a tool call is really in flight.\n"
@@ -229,7 +444,8 @@ def turn_note() -> str:
 
 def build_system_prompt(user_facts: dict, kaggle_hint: str = "",
                         shared: bool = False, speaker=None,
-                        roster=None) -> str:
+                        roster=None, bot_name: str = "",
+                        bot_aliases=()) -> str:
     """Build the system prompt, including any remembered facts.
 
     `kaggle_hint` is the live status of the Kaggle backend, checked against
@@ -244,6 +460,10 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "",
     `speaker` and `roster` say who the bot is talking to and who else is
     listening. They come from the channel itself - see people.py - so
     nobody has to be listed in the code.
+
+    `bot_name` and `bot_aliases` are the bot's own names, so it knows what
+    it is called instead of guessing - and so it can be told about the
+    person in the room who goes by the same name.
     """
     facts_text = ""
     if user_facts:
@@ -280,6 +500,10 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "",
         )
 
     people_text = _people_note(speaker, roster)
+    identity_text = _identity_note(bot_name, bot_aliases, roster)
+    # The kinship terms are the room's, so this part is built per channel
+    # and cannot live in the cached register note.
+    kinship_text = _kinship_note(roster)
 
     return (
         "You are a helpful assistant with a computational engine (WolframAlpha), code "
@@ -287,14 +511,16 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "",
         "Files are stored in a sandboxed workspace directory.\n"
         "\n"
         "Who you are:\n"
-        + _owner_note() +
-        "- You are a real working assistant with real tools, a real sandbox and "
+        + _owner_note()
+        + identity_text
+        + "- You are a real working assistant with real tools, a real sandbox and "
         "a real memory. Act like it.\n"
         "- You are an artificial intelligence, but that is not a line you open "
         "with. Act like a person who knows the people you are talking to.\n"
         + (people_text + "\n" if people_text else "")
         + shared_note +
         _register_note_cached()
+        + kinship_text
         + _quiet_note_cached()
         + "\n"
         "Your tools, for when there is a task:\n"
