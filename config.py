@@ -1,1 +1,216 @@
-IiIiRW52aXJvbm1lbnQgY29uZmlndXJhdGlvbiBhbmQgc2hhcmVkIGNsaWVudHMuIiIiCgppbXBvcnQgb3MKCmZyb20gZG90ZW52IGltcG9ydCBsb2FkX2RvdGVudgpmcm9tIG9wZW5haSBpbXBvcnQgQXN5bmNPcGVuQUkKZnJvbSBzdXBhYmFzZSBpbXBvcnQgQ2xpZW50LCBjcmVhdGVfY2xpZW50Cgpsb2FkX2RvdGVudigpCgoKZGVmIF9yZXF1aXJlKCpuYW1lczogc3RyKSAtPiBOb25lOgogICAgbWlzc2luZyA9IFtuIGZvciBuIGluIG5hbWVzIGlmIG5vdCBvcy5nZXRlbnYobildCiAgICBpZiBtaXNzaW5nOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoCiAgICAgICAgICAgIGYiTWlzc2luZyByZXF1aXJlZCBlbnZpcm9ubWVudCB2YXJpYWJsZShzKTogeycsICcuam9pbihtaXNzaW5nKX0uICIKICAgICAgICAgICAgIkNvcHkgLmVudi5leGFtcGxlIHRvIC5lbnYgYW5kIGZpbGwgaW4gdGhlIHZhbHVlcy4iCiAgICAgICAgKQoKCiMgLS0tIExMTSBwcm92aWRlcnMgLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KIwojIEZvdXIgbW9kZWxzLCB0cmllZCBpbiB0aGlzIG9yZGVyLiBUaGUgZmlyc3Qgb25lIHRoYXQgYW5zd2VycyBkb2VzIHRoZQojIHdvcms7IHRoZSBvdGhlcnMgYXJlIHRoZXJlIGZvciB3aGVuIG9uZSBpcyBkb3duLCByYXRlLWxpbWl0ZWQsIG9yIHNpbXBseQojIGNhbm5vdCBkbyB3aGF0IHdhcyBhc2tlZC4KIwojIDEuIExhZ3VuYSBYUyAyLjEgKHBvb2xzaWRlKSAtIGEgY29kZSBtb2RlbCwgYW5kIGl0IGdvZXMgZmlyc3QuIEl0CiMgICAgYW5zd2VycyBpbiBhYm91dCBhIHNlY29uZCwgaXQgaGFuZGxlcyB0b29sIGNhbGxzLCB0aGlua2luZyBhbmQKIyAgICBvbmUtY2hhcmFjdGVyIGFuc3dlcnMsIGFuZCBpdCBpcyBuZWFybHkgYXMgZ29vZCBhcyBOZW1vdHJvbiBvbiB0aGUKIyAgICB3b3JrLiBTcGVlZCBpcyB0aGUgcmVhc29uIGl0IGlzIGZpcnN0LgojIDIuIE1pbmlNYXggTTMuMSBGbGFzaCAtIHRoZSBnZW5lcmFsIG1vZGVsLiBUaGlzIGlzIHRoZSBvbmUgdGhhdCBkb2VzCiMgICAgdGhlIHRhc2tzIGFuZCB0aGUgcmVzZWFyY2g6IGl0IGlzIHRoZSBzdGVhZGllciBvZiB0aGUgdHdvIGF0IHRoZQojICAgIGNvbnZlcnNhdGlvbmFsIHJlZ2lzdGVyLCB3aGVyZSBhIHJlcGx5IGhhcyB0byBzb3VuZCBsaWtlIGEgcGVyc29uLgojIDMuIE5lbW90cm9uIDMuNSBTdXBlciBWTCAtIHRoZSBzdHJvbmcgb25lLiBTbG93ZXIsIGJ1dCBiZXR0ZXIgYXQgdGhlCiMgICAgbG9uZyB0b29sLWNhbGxpbmcgdHVybnMgdGhhdCBuZWVkIHNldmVyYWwgc3RlcHMsIGFuZCBpdCBpcyB0aGUgb25seQojICAgIG9uZSB0aGF0IGNhbiBsb29rIGF0IGEgcGljdHVyZS4KIyA0LiBHcm9xIC0gdGhlIGxhc3QgcmVzb3J0LiBBIGRpZmZlcmVudCBwcm92aWRlciB3aXRoIGl0cyBvd24ga2V5LCBzbyBpdAojICAgIG9ubHkgcnVucyB3aGVuIE5WSURJQSdzIGVuZHBvaW50IGlzIG91dCBmb3IgYWxsIHRocmVlIG9mIHRoZSBhYm92ZS4KIwojIFRoZSBmaXJzdCB0aHJlZSBhcmUgc2VydmVkIGZyb20gTlZJRElBJ3MgZW5kcG9pbnQsIHNvIHRoZXkgc2hhcmUgb25lCiMgY2xpZW50IGFuZCBvbmUga2V5LiBPbmx5IHRoZSBtb2RlbCBuYW1lIGNoYW5nZXMgYmV0d2VlbiB0aGVtLgoKTEFHVU5BX01PREVMID0gb3MuZ2V0ZW52KCJMQUdVTkFfTU9ERUwiLCAicG9vbHNpZGUvbGFndW5hLXhzLTIuMSIpCk1JTklNQVhfTU9ERUwgPSBvcy5nZXRlbnYoIk1JTklNQVhfTU9ERUwiLCAibWluaW1heGFpL21pbmltYXgtbTMuMS1mbGFzaCIpCk5WSURJQV9NT0RFTCA9IG9zLmdldGVudigiTlZJRElBX01PREVMIiwgIm52aWRpYS9uZW1vdHJvbi0zLjUtc3VwZXItdmwtMTIwYi1hMTJiIikKQk9MVF9NT0RFTCA9IG9zLmdldGVudigiQk9MVF9NT0RFTCIsICJudmlkaWEvbmVtb3Ryb24tMy41LWJvbHQtZTRiIikKTlZJRElBX0FQSV9VUkwgPSBvcy5nZXRlbnYoIk5WSURJQV9BUElfVVJMIiwgImh0dHBzOi8vaW50ZWdyYXRlLmFwaS5udmlkaWEuY29tL3YxIikKTlZJRElBX0FQSV9LRVkgPSBvcy5nZXRlbnYoIk5WSURJQV9BUElfS0VZIikKCiMgV2hhdCB0aGUgZW5kcG9pbnQgd2lsbCBhY2NlcHQsIG1lYXN1cmVkIGFnYWluc3QgdGhlIGxpdmUgQVBJIHJhdGhlciB0aGFuCiMgdGFrZW4gZnJvbSBhIG1vZGVsIGNhcmQ6CiMKIyAtIFRoaW5raW5nOiB5ZXMsIG9uIGJvdGguIGBjaGF0X3RlbXBsYXRlX2t3YXJncy5lbmFibGVfdGhpbmtpbmdgIHR1cm5zCiMgICBpdCBvbiBhbmQgdGhlIHJlYXNvbmluZyBjb21lcyBiYWNrIGluIGByZWFzb25pbmdfY29udGVudGAsIHNlcGFyYXRlCiMgICBmcm9tIHRoZSBhbnN3ZXIuCiMgLSBPdXRwdXQ6IHVwIHRvIDEsMDQ4LDU3NiB0b2tlbnMuIEFza2luZyBmb3IgbW9yZSBpcyByZWZ1c2VkIG91dHJpZ2h0CiMgICAoIk1heCB0b2tlbnMgbXVzdCBub3QgZXhjZWVkIDEwNDg1NzYiKS4KIyAtIFRoZSByZWFzb25pbmcgYW5kIHRoZSBhbnN3ZXIgY29tZSBvdXQgb2YgdGhlIHNhbWUgYWxsb3dhbmNlLiBBIHN0ZXAKIyAgIHdpdGggYSAyMDQ4LXRva2VuIGJ1ZGdldCBhbmQgYSBoYXJkIHF1ZXN0aW9uIGNhbiBzcGVuZCBhbGwgb2YgaXQKIyAgIHRoaW5raW5nIGFuZCByZXR1cm4gYW4gZW1wdHkgYW5zd2VyLCBzbyB0aGUgcGVyLXN0ZXAgYnVkZ2V0IGhhcyB0bwojICAgbGVhdmUgcm9vbSBmb3IgYm90aC4KTUFYX09VVFBVVF9UT0tFTlMgPSAxMDQ4NTc2CgojIEdyb3EgaXMgdGhlIGxhc3QgZmFsbGJhY2sgaW4gdGhlIGNoYWluLiBJdCBoYXMgaXRzIG93biBrZXksIGFuZCBpdCBpcwojIG9ubHkgcmVhY2hlZCB3aGVuIE5WSURJQSdzIGVuZHBvaW50IGlzIG91dCBmb3IgYWxsIHRocmVlIG9mIHRoZSBtb2RlbHMKIyBhYm92ZSAtIHNvIHRoZSBib3Qgc3RpbGwgYW5zd2VycyBpZiBvbmUgcHJvdmlkZXIgZGllcy4KR1JPUV9NT0RFTCA9IG9zLmdldGVudigiR1JPUV9NT0RFTCIsICJsbGFtYS0zLjMtNzBiLXZlcnNhdGlsZSIpCkdST1FfQVBJX1VSTCA9IG9zLmdldGVudigiR1JPUV9BUElfVVJMIiwgImh0dHBzOi8vYXBpLmdyb3EuY29tL29wZW5haS92MSIpCkdST1FfQVBJX0tFWSA9IG9zLmdldGVudigiR1JPUV9BUElfS0VZIikKCiMgLS0tIFRoaXJkLXBhcnR5IHNlcnZpY2VzIC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KIyBEYXl0b25hIHByb3ZpZGVzIHRoZSBzYW5kYm94ZWQgY29kZSBleGVjdXRpb24gYmFja2VuZCAocmVwbGFjZXMgUGlzdG9uLAojIHdob3NlIHB1YmxpYyBBUEkgYmVjYW1lIHdoaXRlbGlzdC1vbmx5IGluIEZlYnJ1YXJ5IDIwMjYpLgpEQVlUT05BX0FQSV9LRVkgPSBvcy5nZXRlbnYoIkRBWVRPTkFfQVBJX0tFWSIpCkRBWVRPTkFfQVBJX1VSTCA9IG9zLmdldGVudigiREFZVE9OQV9BUElfVVJMIiwgImh0dHBzOi8vYXBwLmRheXRvbmEuaW8vYXBpIikKCkxBTkdTRUFSQ0hfQVBJX1VSTCA9IG9zLmdldGVudigiTEFOR1NFQVJDSF9BUElfVVJMIiwgImh0dHBzOi8vYXBpLmxhbmdzZWFyY2guY29tL3YxL3dlYi1zZWFyY2giKQpMQU5HU0VBUkNIX0FQSV9LRVkgPSBvcy5nZXRlbnYoIkxBTkdTRUFSQ0hfQVBJX0tFWSIpCgpXT0xGUkFNX0FQUF9JRCA9IG9zLmdldGVudigiV09MRlJBTV9BUFBfSUQiKQpXT0xGUkFNX0FQSV9VUkwgPSAiaHR0cHM6Ly9hcGkud29sZnJhbWFscGhhLmNvbS92Mi9xdWVyeSIKCiMgS2FnZ2xlLiBFaXRoZXIgdGhlIG5ldyBBUEkgdG9rZW4gKEtHQVRfLi4uKSBvciB0aGUgbGVnYWN5CiMgfi8ua2FnZ2xlL2thZ2dsZS5qc29uIGZpbGUuIEthZ2dsZSBwcm92aWRlcyBmcmVlIENQVSwgR1BVIGFuZCBUUFUgY29tcHV0ZQojIHBsdXMgZGF0YXNldHMgYW5kIHRyYWluZWQgbW9kZWxzOyBzZWUga2FnZ2xlLnB5IGZvciB3aGF0IGl0IGNhbiBhbmQgY2Fubm90CiMgZG8uCktBR0dMRV9BUElfVE9LRU4gPSBvcy5nZXRlbnYoIktBR0dMRV9BUElfVE9LRU4iKQpLQUdHTEVfVVNFUk5BTUUgPSBvcy5nZXRlbnYoIktBR0dMRV9VU0VSTkFNRSIpCktBR0dMRV9LRVkgPSBvcy5nZXRlbnYoIktBR0dMRV9LRVkiKQoKIyBIdWdnaW5nIEZhY2UgSHViLiBUaGUgdG9rZW4gbGV0cyB0aGUgYm90IHNlZSB0aGUgcHJpdmF0ZSBhbmQgZ2F0ZWQKIyByZXBvc2l0b3JpZXMgdGhlIGFjY291bnQgY2FuIHJlYWNoLCBhbmQgZ2l2ZXMgaXQgdGhlIGFjY291bnQncyByYXRlIGxpbWl0CiMgcmF0aGVyIHRoYW4gdGhlIGFub255bW91cyBvbmUuCkhVR0dJTkdGQUNFX1RPS0VOID0gb3MuZ2V0ZW52KCJIVUdHSU5HRkFDRV9UT0tFTiIpIG9yIG9zLmdldGVudigiSEZfVE9LRU4iKQoKIyBXaGljaCBiYWNrZW5kIHRoZSBwbGFpbiBgY29kZWAgdG9vbCB1c2VzLgojCiMgICBkYXl0b25hICAoZGVmYXVsdCkgYSBmYXN0IHNhbmRib3g6IH4wLjNzIHBlciBjYWxsLCBidXQgYSBiYXJlIGVudmlyb25tZW50LgojICAga2FnZ2xlICAgZnJlZSBjbG91ZCBjb21wdXRlIHdpdGggbnVtcHkvcGFuZGFzL3RvcmNoIGFuZCBhIEdQVSBvcHRpb24sIGJ1dAojICAgICAgICAgICAgfjIxcyBwZXIgY2FsbCBiZWNhdXNlIGV2ZXJ5IHJ1biBpcyBhIGZyZXNoIEthZ2dsZSBzZXNzaW9uLgojCiMgYGJvdGhgIGxlYXZlcyB0aGUgY2hvaWNlIHRvIHRoZSBtb2RlbCwgd2hpY2ggaXMgdXN1YWxseSB3aGF0IHlvdSB3YW50OiB0aGUKIyBzYW5kYm94IGZvciBzbmlwcGV0cywgS2FnZ2xlIGZvciBoZWF2eSB3b3JrLgpDT0RFX0JBQ0tFTkQgPSBvcy5nZXRlbnYoIkNPREVfQkFDS0VORCIsICJib3RoIikuc3RyaXAoKS5sb3dlcigpCgojIC0tLSBEYXRhYmFzZSAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCl9zdXBhYmFzZV91cmwgPSBvcy5nZXRlbnYoIlNVUEFCQVNFX1VSTCIpCl9zdXBhYmFzZV9rZXkgPSBvcy5nZXRlbnYoIlNVUEFCQVNFX0tFWSIpCl9yZXF1aXJlKCJTVVBBQkFTRV9VUkwiLCAiU1VQQUJBU0VfS0VZIikKc3VwYWJhc2U6IENsaWVudCA9IGNyZWF0ZV9jbGllbnQoX3N1cGFiYXNlX3VybCwgX3N1cGFiYXNlX2tleSkKCiMgLS0tIExpbWl0cyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KTUFYX0FHRU5UX1NURVBTID0gMTAwICAgICAgICAjIHRvb2wtY2FsbGluZyByb3VuZHMgZm9yIGFuIGludGVyYWN0aXZlIHJlcGx5CkpPQl9NQVhfU1RFUFMgPSAxMDAgICAgICAgICAgIyB0b29sLWNhbGxpbmcgcm91bmRzIGZvciBhIGJhY2tncm91bmQgcmVzZWFyY2ggam9iCgojIEhvdyBtYW55IGNvbnZlcnNhdGlvbiByb3dzIHRvIHB1bGwgZnJvbSB0aGUgZGF0YWJhc2UuIFRoZSB3aG9sZSBjb252ZXJzYXRpb24KIyBpcyBrZXB0IGFuZCBjb21wYWN0ZWQgd2hlbiBpdCBnZXRzIGxhcmdlLCByYXRoZXIgdGhhbiBiZWluZyB0cnVuY2F0ZWQuCkhJU1RPUllfUk9XUyA9IDMwMAoKIyBDaGFyYWN0ZXIgYnVkZ2V0IGZvciB0aGUgbWVzc2FnZXMgc2VudCB0byB0aGUgbW9kZWwuIFRoZSBOZW1vdHJvbiAzLjUgU3VwZXIKIyBWTCB3aW5kb3cgaXMgMjYyayB0b2tlbnM7IHN0YXlpbmcgd2VsbCB1bmRlciBpdCBsZWF2ZXMgcm9vbSBmb3IgdGhlIHJlcGx5LgojIDMwMGsgY2hhcmFjdGVycyBpcyByb3VnaGx5IDc1ayB0b2tlbnMsIHdoaWNoIGxlYXZlcyBwbGVudHkgb2YgaGVhZHJvb20gYW5kCiMgbWVhbnMgdGhlIHN1bW1hcnkgc3RlcCBvbmx5IHJ1bnMgb25jZSB0aGUgaGlzdG9yeSBnZW51aW5lbHkgb3V0Z3Jvd3MgaXQKIyAoYXJvdW5kIDU1MCByb3dzKSBpbnN0ZWFkIG9mIG9uIGV2ZXJ5IHNpbmdsZSB0dXJuLgpDT05URVhUX0NIQVJfQlVER0VUID0gMzAwXzAwMAoKIyBXaGVuIGNvbXBhY3RpbmcsIGtlZXAgdGhpcyBtdWNoIG9mIHRoZSBtb3N0IHJlY2VudCBjb252ZXJzYXRpb24gdmVyYmF0aW0gYW5kCiMgc3VtbWFyaXNlIGV2ZXJ5dGhpbmcgYmVmb3JlIGl0LgpLRUVQX1JFQ0VOVF9DSEFSUyA9IDMwXzAwMApKT0JfVElDS19TRUNPTkRTID0gMTAwICAgICAgICMgaG93IG9mdGVuIGEgcnVubmluZyBqb2IgcmVwb3J0cyBwcm9ncmVzcwoKIyAtLS0gQ2xpZW50cyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQppZiBub3QgTlZJRElBX0FQSV9LRVk6CiAgICByYWlzZSBTeXN0ZW1FeGl0KAogICAgICAgICJOVklESUFfQVBJX0tFWSBtdXN0IGJlIHNldCAtIGJvdGggTWluaU1heCBhbmQgTmVtb3Ryb24gYXJlIHNlcnZlZCAiCiAgICAgICAgImZyb20gTlZJRElBJ3MgZW5kcG9pbnQuIENvcHkgLmVudi5leGFtcGxlIHRvIC5lbnYgYW5kIGZpbGwgaW4gdGhlICIKICAgICAgICAidmFsdWVzLiIKICAgICkKCm52aWRpYV9jbGllbnQgPSBBc3luY09wZW5BSShiYXNlX3VybD1OVklESUFfQVBJX1VSTCwgYXBpX2tleT1OVklESUFfQVBJX0tFWSBvciAibm90LXVzZWQiKQpncm9xX2NsaWVudCA9ICgKICAgIEFzeW5jT3BlbkFJKGJhc2VfdXJsPUdST1FfQVBJX1VSTCwgYXBpX2tleT1HUk9RX0FQSV9LRVkgb3IgIm5vdC11c2VkIikKICAgIGlmIEdST1FfQVBJX0tFWQogICAgZWxzZSBOb25lCikKCgpkZWYgcHJvdmlkZXJfY2hhaW4oKSAtPiBsaXN0W3R1cGxlW3N0ciwgQXN5bmNPcGVuQUksIHN0cl1dOgogICAgIiIiUHJvdmlkZXJzIHRvIHRyeSBpbiBvcmRlcjogTGFndW5hLCBNaW5pTWF4LCBOZW1vdHJvbiwgR3JvcS4KCiAgICBFYWNoIGVudHJ5IGlzIChuYW1lLCBjbGllbnQsIG1vZGVsKS4gVGhlIG5hbWUgaXMgd2hhdAogICAgYGV4dHJhX2JvZHlfZm9yYCBrZXlzIG9mZiwgc28gIkxhZ3VuYSIsICJNaW5pTWF4IiwgIk5WSURJQSIgYW5kCiAgICAiR3JvcSIgbXVzdCBhbGwgYmUgcmVjb2duaXNlZCB0aGVyZS4KCiAgICBUaGUgb3JkZXIgaXMgZGVsaWJlcmF0ZS4gTGFndW5hIFhTIDIuMSBnb2VzIGZpcnN0IGJlY2F1c2UgaXQgaXMKICAgIHF1aWNrIC0gaXQgYW5zd2VycyBpbiBhYm91dCBhIHNlY29uZCAtIGFuZCBpdCBjYW4gY2FsbCB0b29scywgdGhpbmssCiAgICBhbmQgaGFuZGxlIGV2ZXJ5dGhpbmcgdGhlIGJvdCBkb2VzLCBzbyBpdCBkb2VzIHRoZSBvcmRpbmFyeSB3b3JrLgogICAgTWluaU1heCBNMy4xIEZsYXNoIGlzIG5leHQ6IHRoZSBnZW5lcmFsIG1vZGVsLCBhbmQgdGhlIHN0ZWFkaWVyIG9mCiAgICB0aGUgdHdvIGF0IHRoZSBjb252ZXJzYXRpb25hbCByZWdpc3Rlciwgd2hlcmUgYSByZXBseSBoYXMgdG8gc291bmQKICAgIGxpa2UgYSBwZXJzb24uIE5lbW90cm9uIDMuNSBTdXBlciBWTCBpcyB0aGlyZDogc2xvd2VyIGFuZCBzdHJvbmdlciwKICAgIGl0IGNvdmVycyB0aGUgbG9uZyBtdWx0aS1zdGVwIHR1cm5zLCBhbmQgYmVjYXVzZSBpdCBpcyB0aGUgb25lIHRoYXQKICAgIGNhbiByZWFkIGEgcGljdHVyZSwgYSB0dXJuIHdpdGggYW4gaW1hZ2UgaXMgc2VudCB0byBpdCBkaXJlY3RseSAoc2VlCiAgICBgdmlzaW9uX21vZGVsc2ApLiBHcm9xIGlzIHRoZSBsYXN0IHJlc29ydCAtIGEgZGlmZmVyZW50IHByb3ZpZGVyLAogICAgd2l0aCBpdHMgb3duIGtleSwgc28gaXQgb25seSBydW5zIHdoZW4gTlZJRElBJ3MgZW5kcG9pbnQgaXMgb3V0IGZvcgogICAgYWxsIHRocmVlIG9mIHRoZSBtb2RlbHMgYWJvdmUuCgogICAgR3JvcSBpcyBvbmx5IGluIHRoZSBjaGFpbiB3aGVuIGl0cyBrZXkgaXMgY29uZmlndXJlZDsgd2l0aG91dCBvbmUKICAgIHRoZXJlIGlzIG5vdGhpbmcgdG8gZmFsbCBiYWNrIHRvLgogICAgIiIiCiAgICBjaGFpbiA9IFsoIkxhZ3VuYSIsIG52aWRpYV9jbGllbnQsIExBR1VOQV9NT0RFTCksCiAgICAgICAgICAgICAoIk1pbmlNYXgiLCBudmlkaWFfY2xpZW50LCBNSU5JTUFYX01PREVMKSwKICAgICAgICAgICAgICgiTlZJRElBIiwgbnZpZGlhX2NsaWVudCwgTlZJRElBX01PREVMKV0KICAgIGlmIGdyb3FfY2xpZW50IGlzIG5vdCBOb25lOgogICAgICAgIGNoYWluLmFwcGVuZCgoIkdyb3EiLCBncm9xX2NsaWVudCwgR1JPUV9NT0RFTCkpCiAgICByZXR1cm4gY2hhaW4KCgpkZWYgdmlzaW9uX21vZGVscygpIC0+IGxpc3RbdHVwbGVbc3RyLCBBc3luY09wZW5BSSwgc3RyXV06CiAgICAiIiJUaGUgY2hhaW4gZm9yIGEgdHVybiB0aGF0IGhhcyBhIHBpY3R1cmUgaW4gaXQuCgogICAgTmVpdGhlciBMYWd1bmEgbm9yIE1pbmlNYXggY2FuIGxvb2sgYXQgaW1hZ2VzLCBzbyBhIHR1cm4gd2l0aCBhbgogICAgYXR0YWNobWVudCBnb2VzIHN0cmFpZ2h0IHRvIE5lbW90cm9uLCB3aGljaCBjYW4uCiAgICAiIiIKICAgIHJldHVybiBbKCJOVklESUEiLCBudmlkaWFfY2xpZW50LCBOVklESUFfTU9ERUwpXQoKZGVmIGV4dHJhX2JvZHlfZm9yKHByb3ZpZGVyX25hbWU6IHN0ciwgdGhpbmtpbmc6IGJvb2wgPSBUcnVlKSAtPiBkaWN0OgogICAgIiIiUHJvdmlkZXItc3BlY2lmaWMgcmVxdWVzdCBvcHRpb25zLgoKICAgIE5WSURJQSdzIE5lbW90cm9uIG1vZGVscyBjYW4gYmUgYXNrZWQgdG8gcmVhc29uIGJlZm9yZSB0aGV5IGFuc3dlci4KICAgIFRoZSBzd2l0Y2ggaXMgYGNoYXRfdGVtcGxhdGVfa3dhcmdzLmVuYWJsZV90aGlua2luZ2AgLSBhIHRvcC1sZXZlbAogICAgYGVuYWJsZV90aGlua2luZ2AgaXMgcmVqZWN0ZWQgd2l0aCAiVW5zdXBwb3J0ZWQgcGFyYW1ldGVyKHMpIi4gVGhlCiAgICByZWFzb25pbmcgY29tZXMgYmFjayBpbiBpdHMgb3duIGZpZWxkLCBzbyBpdCBkb2VzIG5vdCBlbmQgdXAgaW4gdGhlCiAgICByZXBseS4KCiAgICBgdGhpbmtpbmc9RmFsc2VgIGlzIGZvciB0aGUgc21hbGwgY2FsbHMgdGhhdCBuZWVkIGEgZGlyZWN0IGFuc3dlciAtIHRoZQogICAgcHJlc2VuY2UgY2xhc3NpZmllciwgZm9yIGluc3RhbmNlLCB3aGljaCBoYXMgb25lIGNoYXJhY3RlciB0byBzYXkuCgogICAgTGFndW5hLCBNaW5pTWF4IGFuZCBCb2x0IGFyZSBhbGwgc2VydmVkIGZyb20gTlZJRElBJ3MgZW5kcG9pbnQgYW5kIHRha2UgdGhlCiAgICBzYW1lIGZsYWcsIHNvIHRoZXkgYXJlIHRyZWF0ZWQgbGlrZSBOVklESUEgaGVyZS4gQm90aCB3ZXJlIGNoZWNrZWQKICAgIGFnYWluc3QgdGhlIGxpdmUgZW5kcG9pbnQ6IHdpdGggdGhpbmtpbmcgb24sIHRoZXkgcmVhc29uIGluCiAgICBgcmVhc29uaW5nX2NvbnRlbnRgIGFuZCBhbnN3ZXIgaW4gYGNvbnRlbnRgLCBleGFjdGx5IGxpa2UgTmVtb3Ryb24KICAgIGRvZXMuCiAgICAiIiIKICAgIGlmIHByb3ZpZGVyX25hbWUgaW4gKCJOVklESUEiLCAiTWluaU1heCIsICJMYWd1bmEiLCAiQk9MVCIpOgogICAgICAgIHJldHVybiB7ImNoYXRfdGVtcGxhdGVfa3dhcmdzIjogeyJlbmFibGVfdGhpbmtpbmciOiBib29sKHRoaW5raW5nKX19CiAgICByZXR1cm4ge30KCgojIC0tLSBUaGUgYm90J3Mgb3duZXIgLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQojIFRoZSBvd25lciBpcyB0aGUgb25lIHBlcnNvbiB0aGUgYm90IHdhcyBidWlsdCBmb3IsIGFuZCB0aGUgb25lIHdob3NlCiMgY29udGV4dCBpdCBrZWVwcy4gRXZlcnl0aGluZyBlbHNlIGFib3V0IHRoZSBwZW9wbGUgaW4gdGhlIGNoYXQgaXMgd29ya2VkCiMgb3V0IGF0IHJ1bnRpbWUgZnJvbSB0aGUgY2hhbm5lbCBpdHNlbGYgLSBzZWUgcGVvcGxlLnB5LgpPV05FUl9ESVNDT1JEX0lEID0gb3MuZ2V0ZW52KCJPV05FUl9ESVNDT1JEX0lEIiwgIiIpCk9XTkVSX1RBRyA9IG9zLmdldGVudigiT1dORVJfVEFHIiwgImRhbWlhbmxld2lzNDc5IikKT1dORVJfTkFNRSA9IG9zLmdldGVudigiT1dORVJfTkFNRSIsICJEYW1pYW4iKQojIGZpeGVkIGVuY29kaW5nCg==
+"""Environment configuration and shared clients."""
+
+import os
+
+from dotenv import load_dotenv
+from openai import AsyncOpenAI
+from supabase import Client, create_client
+
+load_dotenv()
+
+
+def _require(*names: str) -> None:
+    missing = [n for n in names if not os.getenv(n)]
+    if missing:
+        raise SystemExit(
+            f"Missing required environment variable(s): {', '.join(missing)}. "
+            "Copy .env.example to .env and fill in the values."
+        )
+
+
+# --- LLM providers --------------------------------------------------------
+#
+# Four models, tried in this order. The first one that answers does the
+# work; the others are there for when one is down, rate-limited, or simply
+# cannot do what was asked.
+#
+# 1. Laguna XS 2.1 (poolside) - a code model, and it goes first. It
+#    answers in about a second, it handles tool calls, thinking and
+#    one-character answers, and it is nearly as good as Nemotron on the
+#    work. Speed is the reason it is first.
+# 2. MiniMax M3.1 Flash - the general model. This is the one that does
+#    the tasks and the research: it is the steadier of the two at the
+#    conversational register, where a reply has to sound like a person.
+# 3. Nemotron 3.5 Super VL - the strong one. Slower, but better at the
+#    long tool-calling turns that need several steps, and it is the only
+#    one that can look at a picture.
+# 4. Groq - the last resort. A different provider with its own key, so it
+#    only runs when NVIDIA's endpoint is out for all three of the above.
+#
+# The first three are served from NVIDIA's endpoint, so they share one
+# client and one key. Only the model name changes between them.
+
+LAGUNA_MODEL = os.getenv("LAGUNA_MODEL", "poolside/laguna-xs-2.1")
+MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "minimaxai/minimax-m3.1-flash")
+NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3.5-super-vl-120b-a12b")
+BOLT_MODEL = os.getenv("BOLT_MODEL", "nvidia/nemotron-3.5-bolt-e4b")
+NVIDIA_API_URL = os.getenv("NVIDIA_API_URL", "https://integrate.api.nvidia.com/v1")
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
+
+# What the endpoint will accept, measured against the live API rather than
+# taken from a model card:
+#
+# - Thinking: yes, on both. `chat_template_kwargs.enable_thinking` turns
+#   it on and the reasoning comes back in `reasoning_content`, separate
+#   from the answer.
+# - Output: up to 1,048,576 tokens. Asking for more is refused outright
+#   ("Max tokens must not exceed 1048576").
+# - The reasoning and the answer come out of the same allowance. A step
+#   with a 2048-token budget and a hard question can spend all of it
+#   thinking and return an empty answer, so the per-step budget has to
+#   leave room for both.
+MAX_OUTPUT_TOKENS = 1048576
+
+# Groq is the last fallback in the chain. It has its own key, and it is
+# only reached when NVIDIA's endpoint is out for all three of the models
+# above - so the bot still answers if one provider dies.
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_API_URL = os.getenv("GROQ_API_URL", "https://api.groq.com/openai/v1")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+# --- Third-party services -------------------------------------------------
+# Daytona provides the sandboxed code execution backend (replaces Piston,
+# whose public API became whitelist-only in February 2026).
+DAYTONA_API_KEY = os.getenv("DAYTONA_API_KEY")
+DAYTONA_API_URL = os.getenv("DAYTONA_API_URL", "https://app.daytona.io/api")
+
+LANGSEARCH_API_URL = os.getenv("LANGSEARCH_API_URL", "https://api.langsearch.com/v1/web-search")
+LANGSEARCH_API_KEY = os.getenv("LANGSEARCH_API_KEY")
+
+WOLFRAM_APP_ID = os.getenv("WOLFRAM_APP_ID")
+WOLFRAM_API_URL = "https://api.wolframalpha.com/v2/query"
+
+# Kaggle. Either the new API token (KGAT_...) or the legacy
+# ~/.kaggle/kaggle.json file. Kaggle provides free CPU, GPU and TPU compute
+# plus datasets and trained models; see kaggle.py for what it can and cannot
+# do.
+KAGGLE_API_TOKEN = os.getenv("KAGGLE_API_TOKEN")
+KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
+KAGGLE_KEY = os.getenv("KAGGLE_KEY")
+
+# Hugging Face Hub. The token lets the bot see the private and gated
+# repositories the account can reach, and gives it the account's rate limit
+# rather than the anonymous one.
+HUGGINGFACE_TOKEN = os.getenv("HUGGINGFACE_TOKEN") or os.getenv("HF_TOKEN")
+
+# Which backend the plain `code` tool uses.
+#
+#   daytona  (default) a fast sandbox: ~0.3s per call, but a bare environment.
+#   kaggle   free cloud compute with numpy/pandas/torch and a GPU option, but
+#            ~21s per call because every run is a fresh Kaggle session.
+#
+# `both` leaves the choice to the model, which is usually what you want: the
+# sandbox for snippets, Kaggle for heavy work.
+CODE_BACKEND = os.getenv("CODE_BACKEND", "both").strip().lower()
+
+# --- Database -------------------------------------------------------------
+_supabase_url = os.getenv("SUPABASE_URL")
+_supabase_key = os.getenv("SUPABASE_KEY")
+_require("SUPABASE_URL", "SUPABASE_KEY")
+supabase: Client = create_client(_supabase_url, _supabase_key)
+
+# --- Limits ---------------------------------------------------------------
+MAX_AGENT_STEPS = 100        # tool-calling rounds for an interactive reply
+JOB_MAX_STEPS = 100          # tool-calling rounds for a background research job
+
+# How many conversation rows to pull from the database. The whole conversation
+# is kept and compacted when it gets large, rather than being truncated.
+HISTORY_ROWS = 300
+
+# Character budget for the messages sent to the model. The Nemotron 3.5 Super
+# VL window is 262k tokens; staying well under it leaves room for the reply.
+# 300k characters is roughly 75k tokens, which leaves plenty of headroom and
+# means the summary step only runs once the history genuinely outgrows it
+# (around 550 rows) instead of on every single turn.
+CONTEXT_CHAR_BUDGET = 300_000
+
+# When compacting, keep this much of the most recent conversation verbatim and
+# summarise everything before it.
+KEEP_RECENT_CHARS = 30_000
+JOB_TICK_SECONDS = 100       # how often a running job reports progress
+
+# --- Clients --------------------------------------------------------------
+if not NVIDIA_API_KEY:
+    raise SystemExit(
+        "NVIDIA_API_KEY must be set - both MiniMax and Nemotron are served "
+        "from NVIDIA's endpoint. Copy .env.example to .env and fill in the "
+        "values."
+    )
+
+nvidia_client = AsyncOpenAI(base_url=NVIDIA_API_URL, api_key=NVIDIA_API_KEY or "not-used")
+groq_client = (
+    AsyncOpenAI(base_url=GROQ_API_URL, api_key=GROQ_API_KEY or "not-used")
+    if GROQ_API_KEY
+    else None
+)
+
+
+def provider_chain() -> list[tuple[str, AsyncOpenAI, str]]:
+    """Providers to try in order: Laguna, MiniMax, Nemotron, Groq.
+
+    Each entry is (name, client, model). The name is what
+    `extra_body_for` keys off, so "Laguna", "MiniMax", "NVIDIA" and
+    "Groq" must all be recognised there.
+
+    The order is deliberate. Laguna XS 2.1 goes first because it is
+    quick - it answers in about a second - and it can call tools, think,
+    and handle everything the bot does, so it does the ordinary work.
+    MiniMax M3.1 Flash is next: the general model, and the steadier of
+    the two at the conversational register, where a reply has to sound
+    like a person. Nemotron 3.5 Super VL is third: slower and stronger,
+    it covers the long multi-step turns, and because it is the one that
+    can read a picture, a turn with an image is sent to it directly (see
+    `vision_models`). Groq is the last resort - a different provider,
+    with its own key, so it only runs when NVIDIA's endpoint is out for
+    all three of the models above.
+
+    Groq is only in the chain when its key is configured; without one
+    there is nothing to fall back to.
+    """
+    chain = [("Laguna", nvidia_client, LAGUNA_MODEL),
+             ("MiniMax", nvidia_client, MINIMAX_MODEL),
+             ("NVIDIA", nvidia_client, NVIDIA_MODEL)]
+    if groq_client is not None:
+        chain.append(("Groq", groq_client, GROQ_MODEL))
+    return chain
+
+
+def vision_models() -> list[tuple[str, AsyncOpenAI, str]]:
+    """The chain for a turn that has a picture in it.
+
+    Neither Laguna nor MiniMax can look at images, so a turn with an
+    attachment goes straight to Nemotron, which can.
+    """
+    return [("NVIDIA", nvidia_client, NVIDIA_MODEL)]
+
+def extra_body_for(provider_name: str, thinking: bool = True) -> dict:
+    """Provider-specific request options.
+
+    NVIDIA's Nemotron models can be asked to reason before they answer.
+    The switch is `chat_template_kwargs.enable_thinking` - a top-level
+    `enable_thinking` is rejected with "Unsupported parameter(s)". The
+    reasoning comes back in its own field, so it does not end up in the
+    reply.
+
+    `thinking=False` is for the small calls that need a direct answer - the
+    presence classifier, for instance, which has one character to say.
+
+    Laguna, MiniMax and Bolt are all served from NVIDIA's endpoint and take the
+    same flag, so they are treated like NVIDIA here. Both were checked
+    against the live endpoint: with thinking on, they reason in
+    `reasoning_content` and answer in `content`, exactly like Nemotron
+    does.
+    """
+    if provider_name in ("NVIDIA", "MiniMax", "Laguna", "BOLT"):
+        return {"chat_template_kwargs": {"enable_thinking": bool(thinking)}}
+    return {}
+
+
+# --- The bot's owner -------------------------------------------------------
+# The owner is the one person the bot was built for, and the one whose
+# context it keeps. Everything else about the people in the chat is worked
+# out at runtime from the channel itself - see people.py.
+OWNER_DISCORD_ID = os.getenv("OWNER_DISCORD_ID", "")
+OWNER_TAG = os.getenv("OWNER_TAG", "damianlewis479")
+OWNER_NAME = os.getenv("OWNER_NAME", "Damian")
+# fixed encoding

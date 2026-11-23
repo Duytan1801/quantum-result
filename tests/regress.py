@@ -1,1 +1,439 @@
-IiIiQSByZWdyZXNzaW9uIHBhc3Mgb3ZlciBldmVyeXRoaW5nIHRoYXQgd2FzIGNoYW5nZWQuCgpUaGUgYm90IGhhcyBncm93biBhIGxvdCBvZiBtb3ZpbmcgcGFydHMsIGFuZCB0aGUgY2hhbmdlcyBoZXJlIHRvdWNoIHRoZQpwcm9tcHQsIHRoZSBhbnN3ZXIgcGF0aCwgdGhlIHRvb2xzIGFuZCB0aGUgbWVtb3J5IGxheWVyIGF0IG9uY2UuIFNvIHRoaXMKaW1wb3J0cyBldmVyeSBtb2R1bGUsIHRoZW4gZXhlcmNpc2VzIGVhY2ggb2YgdGhlIG5ldyBwaWVjZXMuCgogICAgcHl0aG9uIHRlc3RzL3JlZ3Jlc3MucHkKIiIiCgppbXBvcnQgYXN5bmNpbwppbXBvcnQgb3MKaW1wb3J0IHN5cwppbXBvcnQgdGVtcGZpbGUKCnN5cy5wYXRoLmluc2VydCgwLCBvcy5wYXRoLmRpcm5hbWUob3MucGF0aC5hYnNwYXRoKF9fZmlsZV9fKSkpCgpmcm9tIF9lbnYgaW1wb3J0IFJPT1QsIG5lZWQgICMgbm9xYTogRTQwMgoKc3lzLnBhdGguaW5zZXJ0KDAsIFJPT1QpCgpuZWVkKCJTVVBBQkFTRV9LRVkiLCAiTlZJRElBX0FQSV9LRVkiKQoKIyBTb21lIG9mIHRoZSBjaGVja3Mgd3JpdGUgZmlsZXM6IHRoZSBmaWxlIHRvb2xzLCBhbmQgdGhlIEthZ2dsZQojIGNhcnJ5LW92ZXIuIFRoZXkgZG8gaXQgaW4gYSBzY3JhdGNoIGRpcmVjdG9yeSwgc28gdGhhdCBhIHRlc3QgcnVuCiMgbGVhdmVzIG5vdGhpbmcgYmVoaW5kIGluIHRoZSByZXBvc2l0b3J5LiBUaGUgYm90J3Mgb3duIGZpbGUgdG9vbHMgd29yawojIG91dCB3aGVyZSB0byB3cml0ZSBmcm9tIHRoZSB3b3JraW5nIGRpcmVjdG9yeSwgc28gdGhpcyBoYXMgdG8gaGFwcGVuCiMgYmVmb3JlIHRoZSBib3QgaXMgaW1wb3J0ZWQuCl9TQ1JBVENIID0gdGVtcGZpbGUubWtkdGVtcChwcmVmaXg9ImJvdC1yZWdyZXNzLSIpCm9zLmNoZGlyKF9TQ1JBVENIKQoKRkFJTEVEID0gW10KUEFTU0VEID0gMAoKCmRlZiBjaGVjayhsYWJlbCwgZ290LCB3YW50KToKICAgIGdsb2JhbCBQQVNTRUQKICAgIGlmIGdvdCA9PSB3YW50OgogICAgICAgIFBBU1NFRCArPSAxCiAgICAgICAgcHJpbnQoZiIgIG9rICAge2xhYmVsfSIpCiAgICBlbHNlOgogICAgICAgIEZBSUxFRC5hcHBlbmQobGFiZWwpCiAgICAgICAgcHJpbnQoZiIgIEZBSUwge2xhYmVsfVxuICAgICAgICAgZ290OiAge2dvdCFyfVxuICAgICAgICAgd2FudDoge3dhbnQhcn0iKQoKCmRlZiBjaGVja190cnVlKGxhYmVsLCBjb25kKToKICAgIGNoZWNrKGxhYmVsLCBib29sKGNvbmQpLCBUcnVlKQoKCnByaW50KCI9IiAqIDcwKQpwcmludCgiRVZFUlkgTU9EVUxFIElNUE9SVFMiKQpwcmludCgiPSIgKiA3MCkKCk1PRFVMRVMgPSBbCiAgICAiY2FjaGUiLCAiY29uZmlnIiwgImNvbnRleHQiLCAiZGlzY29yZF91dGlscyIsICJndWFyZCIsICJodWdnaW5nZmFjZSIsCiAgICAiam9icyIsICJrYWdnbGVfYmFja2VuZCIsICJsYXRleF9yZW5kZXIiLCAibWF0aHJlbmRlciIsICJtZW1vcnkiLAogICAgInBhcGVycyIsICJwZW9wbGUiLCAicHJlc2VuY2UiLCAicHJvbXB0cyIsICJzYW5kYm94IiwgInN0b3JhZ2UiLCAidG9vbHMiLApdCgpmb3IgbmFtZSBpbiBNT0RVTEVTOgogICAgdHJ5OgogICAgICAgIF9faW1wb3J0X18obmFtZSkKICAgICAgICBQQVNTRUQgKz0gMQogICAgICAgIHByaW50KGYiICBvayAgIHtuYW1lfSIpCiAgICBleGNlcHQgRXhjZXB0aW9uIGFzIGV4YzoKICAgICAgICBGQUlMRUQuYXBwZW5kKGYiaW1wb3J0IHtuYW1lfSIpCiAgICAgICAgcHJpbnQoZiIgIEZBSUwge25hbWV9OiB7dHlwZShleGMpLl9fbmFtZV9ffToge2V4Y30iKQoKIyBhZ2VudCBpbXBvcnRzIGxhc3Q6IGl0IHB1bGxzIGluIG5lYXJseSBldmVyeXRoaW5nLgp0cnk6CiAgICBpbXBvcnQgYWdlbnQgICMgbm9xYTogRTQwMgoKICAgIFBBU1NFRCArPSAxCiAgICBwcmludCgiICBvayAgIGFnZW50IikKZXhjZXB0IEV4Y2VwdGlvbiBhcyBleGM6CiAgICBGQUlMRUQuYXBwZW5kKCJpbXBvcnQgYWdlbnQiKQogICAgcHJpbnQoZiIgIEZBSUwgYWdlbnQ6IHt0eXBlKGV4YykuX19uYW1lX199OiB7ZXhjfSIpCgpwcmludCgpCnByaW50KCI9IiAqIDcwKQpwcmludCgiVEhFIFBST1ZJREVSIENIQUlOIikKcHJpbnQoIj0iICogNzApCgpmcm9tIGNvbmZpZyBpbXBvcnQgcHJvdmlkZXJfY2hhaW4sIHZpc2lvbl9tb2RlbHMsIEJPTFRfTU9ERUwgICMgbm9xYTogRTQwMgoKY2hlY2soInRoZSBjaGFpbiBpcyBMYWd1bmEsIE1pbmlNYXgsIE5lbW90cm9uIiwKICAgICAgW24gZm9yIG4sIF8sIF8gaW4gcHJvdmlkZXJfY2hhaW4oKV0sIFsiTGFndW5hIiwgIk1pbmlNYXgiLCAiTlZJRElBIl0pCmNoZWNrKCJ0aGUgdmlzaW9uIGNoYWluIGlzIE5lbW90cm9uIiwKICAgICAgW24gZm9yIG4sIF8sIF8gaW4gdmlzaW9uX21vZGVscygpXSwgWyJOVklESUEiXSkKCiMgVGhlIGFuc3dlciBhbmQgdGhlIHNjYW4gYXJlIHR3byBkaWZmZXJlbnQgbW9kZWxzIG9uIHB1cnBvc2U6IExhZ3VuYQojIGFuc3dlcnMsIE1pbmlNYXggcmVhZHMgdGhlIHJvb20uIElmIHRoZXkgd2VyZSB0aGUgc2FtZSwgdGhlIGJvdCB3b3VsZAojIGJlIG1hcmtpbmcgaXRzIG93biBob21ld29yay4KaW1wb3J0IHByZXNlbmNlICAjIG5vcWE6IEU0MDIKZnJvbSBjb25maWcgaW1wb3J0IExBR1VOQV9NT0RFTCwgTUlOSU1BWF9NT0RFTCwgTlZJRElBX01PREVMICAjIG5vcWE6IEU0MDIKCmNoZWNrKCJ0aGUgYW5zd2VyIGNoYWluIHN0YXJ0cyB3aXRoIExhZ3VuYSIsCiAgICAgIHByb3ZpZGVyX2NoYWluKClbMF1bMl0sIExBR1VOQV9NT0RFTCkKY2hlY2soInRoZSBzY2FubmVyIGlzIEJvbHQiLCBwcmVzZW5jZS5zY2FubmVyX21vZGVscygpWzBdLCBCT0xUX01PREVMKQpjaGVjaygidGhlIHNjYW5uZXIgZmFsbHMgYmFjayB0byBOZW1vdHJvbiIsCiAgICAgIHByZXNlbmNlLnNjYW5uZXJfbW9kZWxzKCksIChCT0xUX01PREVMLCBOVklESUFfTU9ERUwpKQpjaGVja190cnVlKCJ0aGUgc2Nhbm5lciBkb2VzIG5vdCBzY2FuIHdpdGggdGhlIGFuc3dlcmluZyBtb2RlbCIsCiAgICAgICAgICAgTEFHVU5BX01PREVMIG5vdCBpbiBwcmVzZW5jZS5zY2FubmVyX21vZGVscygpKQpjaGVja190cnVlKCJ0aGUgc2Nhbm5lciBkb2VzIG5vdCBmYWxsIGJhY2sgdG8gR3JvcSIsCiAgICAgICAgICAgImdyb3EiIG5vdCBpbiAiICIuam9pbihwcmVzZW5jZS5zY2FubmVyX21vZGVscygpKS5sb3dlcigpKQoKcHJpbnQoKQpwcmludCgiPSIgKiA3MCkKcHJpbnQoIk5PIFNFQ1JFVFMgSU4gVEhFIFNPVVJDRSIpCnByaW50KCI9IiAqIDcwKQoKaW1wb3J0IHJlICAjIG5vcWE6IEU0MDIKClJPT1RfRElSID0gUk9PVApQQVRURVJOUyA9IHsKICAgICJrYWdnbGUgdG9rZW4iOiByIktHQVRfW0EtWmEtejAtOV17MjAsfSIsCiAgICAiaGYgdG9rZW4iOiByImhmX1tBLVphLXowLTldezMwLH0iLAogICAgIm52aWRpYSBrZXkiOiByIm52YXBpLVtBLVphLXowLTlfLV17MzAsfSIsCiAgICAiZ2l0aHViIHBhdCI6IHIiZ2l0aHViX3BhdF9bQS1aYS16MC05X117MjAsfSIsCiAgICAiZGlzY29yZCB0b2tlbiI6IHIiTVRVMk9UWTBORFUxW0EtWmEtejAtOS5fLV17MjAsfSIsCiAgICAic3VwYWJhc2Uga2V5IjogciJzYl9zZWNyZXRfW0EtWmEtejAtOV9dezIwLH0iLAp9CgpsZWFrcyA9IFtdCmZvciBkaXJwYXRoLCBkaXJuYW1lcywgZmlsZW5hbWVzIGluIG9zLndhbGsoUk9PVF9ESVIpOgogICAgZGlybmFtZXNbOl0gPSBbZCBmb3IgZCBpbiBkaXJuYW1lcwogICAgICAgICAgICAgICAgICAgaWYgZCBub3QgaW4geyJub2RlX21vZHVsZXMiLCAiX19weWNhY2hlX18iLCAiYm90X2ZpbGVzIiwgIi5naXQifV0KICAgIGZvciBuYW1lIGluIHNvcnRlZChmaWxlbmFtZXMpOgogICAgICAgIGlmIG5hbWUuZW5kc3dpdGgoKCIucHljIiwgIi5weW8iKSk6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgIyBUaGUgbG9jYWwgLmVudiBpcyB3aGVyZSB0aGUga2V5cyBhcmUgKm1lYW50KiB0byBiZTogaXQgaXMgaW4KICAgICAgICAjIC5naXRpZ25vcmUgYW5kIG5ldmVyIGdvZXMgdXAgdG8gR2l0SHViLiBXaGF0IHRoaXMgY2hlY2sgaXMKICAgICAgICAjIGFib3V0IGlzIGEga2V5IHdyaXR0ZW4gaW50byBhIGZpbGUgdGhhdCBkb2VzIGdvIHVwLgogICAgICAgIGlmIG5hbWUgPT0gIi5lbnYiIG9yIG5hbWUuc3RhcnRzd2l0aCgiLmVudi4iKToKICAgICAgICAgICAgY29udGludWUKICAgICAgICBwYXRoID0gb3MucGF0aC5qb2luKGRpcnBhdGgsIG5hbWUpCiAgICAgICAgdHJ5OgogICAgICAgICAgICBib2R5ID0gb3BlbihwYXRoLCBlbmNvZGluZz0idXRmLTgiLCBlcnJvcnM9InJlcGxhY2UiKS5yZWFkKCkKICAgICAgICBleGNlcHQgT1NFcnJvcjoKICAgICAgICAgICAgY29udGludWUKICAgICAgICBmb3IgbGFiZWwsIHBhdHRlcm4gaW4gUEFUVEVSTlMuaXRlbXMoKToKICAgICAgICAgICAgaWYgcmUuc2VhcmNoKHBhdHRlcm4sIGJvZHkpOgogICAgICAgICAgICAgICAgbGVha3MuYXBwZW5kKGYie29zLnBhdGgucmVscGF0aChwYXRoLCBST09UX0RJUil9OiB7bGFiZWx9IikKCmNoZWNrKCJubyBsaXZlIGNyZWRlbnRpYWxzIGluIHRoZSBzb3VyY2UiLCBsZWFrcywgW10pCgpwcmludCgpCnByaW50KCI9IiAqIDcwKQpwcmludCgiVEhFIEtBR0dMRSBDQVJSWS1PVkVSICh3aXRob3V0IHRoZSBuZXR3b3JrKSIpCnByaW50KCI9IiAqIDcwKQoKaW1wb3J0IGthZ2dsZV9iYWNrZW5kIGFzIGtiICAjIG5vcWE6IEU0MDIKClNUQVRFID0gImthZ2dsZV91bml0X3N0YXRlIgpvcy5tYWtlZGlycyhTVEFURSwgZXhpc3Rfb2s9VHJ1ZSkKZm9yIHN0YWxlIGluIG9zLmxpc3RkaXIoU1RBVEUpOgogICAgb3MucmVtb3ZlKG9zLnBhdGguam9pbihTVEFURSwgc3RhbGUpKQp3aXRoIG9wZW4ob3MucGF0aC5qb2luKFNUQVRFLCAiYW5zd2VyLnR4dCIpLCAidyIpIGFzIGZoOgogICAgZmgud3JpdGUoInRoZSBhbnN3ZXIgaXMgNDIiKQoKcHJlYW1ibGUsIGNhcnJpZWQgPSBrYi5fY2FycnlfcHJlYW1ibGUoU1RBVEUpCmNoZWNrKCJ0aGUgZmlsZSBpcyBjYXJyaWVkIiwgY2FycmllZCwgWyJhbnN3ZXIudHh0Il0pCmNoZWNrX3RydWUoInRoZSBwcmVhbWJsZSB3cml0ZXMgdGhlIGZpbGUiLCAiYW5zd2VyLnR4dCIgaW4gcHJlYW1ibGUpCmNoZWNrX3RydWUoInRoZSBwcmVhbWJsZSB0YXJnZXRzIHRoZSB3b3JraW5nIGRpcmVjdG9yeSIsICIva2FnZ2xlL3dvcmtpbmciIGluIHByZWFtYmxlKQoKIyBUaGUgcHJlYW1ibGUgbXVzdCBjb21waWxlIGFuZCBtdXN0IGFjdHVhbGx5IHdyaXRlLCB3aXRoIHRoZSBicmFja2V0cyBpbgojIHRoZSByaWdodCBwbGFjZS4gV2l0aG91dCB0aGVtIFB5dGhvbiByZWFkcyBpdCBhcyAicGF0aCwgb3IgZWxzZSB3cml0ZSIuCmNvbXBpbGUocHJlYW1ibGUsICJtYWluLnB5IiwgImV4ZWMiKQppbXBvcnQgYmFzZTY0ICAjIG5vcWE6IEU0MDIKaW1wb3J0IHBhdGhsaWIgICMgbm9xYTogRTQwMgoKbnMgPSB7InBhdGhsaWIiOiBwYXRobGliLCAiYmFzZTY0IjogYmFzZTY0fQpleGVjKHByZWFtYmxlLCBucykKY2hlY2tfdHJ1ZSgidGhlIHByZWFtYmxlIHdyb3RlIHRoZSBmaWxlIiwKICAgICAgICAgICBvcy5wYXRoLmV4aXN0cyhvcy5wYXRoLmpvaW4ob3MuZ2V0Y3dkKCksICJhbnN3ZXIudHh0IikpKQoKY2hlY2soInRoZSBkZWZhdWx0IHN0YXRlIGRpciBpcyB0aGUgd29ya3NwYWNlIG9uZSIsCiAgICAgIGtiLl9zdGF0ZV9kaXIoIiIpLCBrYi5TVEFURV9ST09UKQpjaGVja190cnVlKCJ0aGUgc3RhdGUgZGlyIGlzIHVuZGVyIHRoZSB3b3Jrc3BhY2UiLAogICAgICAgICAgIGtiLlNUQVRFX1JPT1QuZW5kc3dpdGgob3MucGF0aC5qb2luKCJib3RfZmlsZXMiLCAia2FnZ2xlIikpKQoKcHJpbnQoKQpwcmludCgiPSIgKiA3MCkKcHJpbnQoIlRIRSBGSUxFIFRPT0xTIikKcHJpbnQoIj0iICogNzApCgppbXBvcnQgdG9vbHMgICMgbm9xYTogRTQwMgoKCmFzeW5jIGRlZiBmaWxlX3Byb2JlKCk6CiAgICBhd2FpdCB0b29scy53cml0ZV9maWxlKCJwcm9iZS9mLnR4dCIsICJvbmVcbnR3b1xuIikKICAgIHJlYWQgPSBhd2FpdCB0b29scy5yZWFkX2ZpbGUoInByb2JlL2YudHh0IikKICAgIGF3YWl0IHRvb2xzLmVkaXRfZmlsZSgicHJvYmUvZi50eHQiLCAib25lIiwgIk9ORSIpCiAgICBlZGl0ZWQgPSBhd2FpdCB0b29scy5yZWFkX2ZpbGUoInByb2JlL2YudHh0IikKICAgIG1pc3NpbmcgPSBhd2FpdCB0b29scy5yZWFkX2ZpbGUoInByb2JlL25vcGUudHh0IikKICAgIGVzY2FwZWQgPSBhd2FpdCB0b29scy5yZWFkX2ZpbGUoIi4uLy4uL2V0Yy9wYXNzd2QiKQogICAgcmV0dXJuIHJlYWQsIGVkaXRlZCwgbWlzc2luZywgZXNjYXBlZAoKCnJlYWQsIGVkaXRlZCwgbWlzc2luZywgZXNjYXBlZCA9IGFzeW5jaW8ucnVuKGZpbGVfcHJvYmUoKSkKY2hlY2soImEgZmlsZSBpcyB3cml0dGVuIGFuZCByZWFkIiwgcmVhZCwgIm9uZVxudHdvXG4iKQpjaGVjaygiYSBmaWxlIGlzIGVkaXRlZCIsIGVkaXRlZCwgIk9ORVxudHdvXG4iKQpjaGVja190cnVlKCJhIG1pc3NpbmcgZmlsZSBzYXlzIHNvIiwgIm5vdCBmb3VuZCIgaW4gbWlzc2luZy5sb3dlcigpKQpjaGVja190cnVlKCJ0aGUgd29ya3NwYWNlIGNhbm5vdCBiZSBlc2NhcGVkIiwgImFjY2VzcyBkZW5pZWQiIGluIGVzY2FwZWQubG93ZXIoKSkKCnByaW50KCkKcHJpbnQoIj0iICogNzApCnByaW50KCJUSEUgUFJPTVBUIikKcHJpbnQoIj0iICogNzApCgpmcm9tIHByb21wdHMgaW1wb3J0IGJ1aWxkX3N5c3RlbV9wcm9tcHQsIHR1cm5fbm90ZSAgIyBub3FhOiBFNDAyCgpwcm9tcHQgPSBidWlsZF9zeXN0ZW1fcHJvbXB0KHt9LCAiIiwgc2hhcmVkPUZhbHNlLAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICBzcGVha2VyPXsiaWQiOiAiMSIsICJuYW1lIjogIkphZGUiLCAicGxhaW4iOiAiSmFkZSJ9LAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICByb3N0ZXI9W3siaWQiOiAiMSIsICJuYW1lIjogIkphZGUiLCAicGxhaW4iOiAiSmFkZSJ9LAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHsiaWQiOiAiMiIsICJuYW1lIjogIkxhaW4iLCAicGxhaW4iOiAiTGFpbiJ9XSkKY2hlY2tfdHJ1ZSgidGhlIHByb21wdCBoYXMgdGhlIHJlZ2lzdGVyIHJ1bGVzIiwgIlR3byByZWdpc3RlcnMiIGluIHByb21wdCkKY2hlY2tfdHJ1ZSgidGhlIHByb21wdCBoYXMgdGhlIHF1aWV0IHJ1bGVzIiwgIldoZW4gdG8gYW5zd2VyIiBpbiBwcm9tcHQpCmNoZWNrX3RydWUoInRoZSBwcm9tcHQgbmFtZXMgdGhlIHBlb3BsZSIsICJKYWRlIiBpbiBwcm9tcHQgYW5kICJMYWluIiBpbiBwcm9tcHQpCmNoZWNrX3RydWUoInRoZSB0dXJuIG5vdGUgc2F5cyBob3cgdG8gY2hvb3NlIiwgIldPUktJTkciIGluIHR1cm5fbm90ZSgpKQpjaGVja190cnVlKCJ0aGUgcHJvbXB0IGRvZXMgbm90IGNhcnJ5IGEgY3JlZGVudGlhbCIsCiAgICAgICAgICAgIktHQVRfIiBub3QgaW4gcHJvbXB0IGFuZCAiaGZfIiBub3QgaW4gcHJvbXB0LnNwbGl0KCJIdWIgdG9rZW46IilbLTFdWzoyMF0pCgpwcmludCgpCnByaW50KCI9IiAqIDcwKQpwcmludCgiVEhFIFBSRVNFTkNFIERFQ0lTSU9OIikKcHJpbnQoIj0iICogNzApCgppbXBvcnQgcHJlc2VuY2UgICMgbm9xYTogRTQwMgpmcm9tIHBlb3BsZSBpbXBvcnQgKGFkZHJlc3Nlc19ib3QsIGJvdF9uYW1lX3ZhcmlhbnRzLCBuYW1lX2NvbGxpc2lvbnMsICAjIG5vcWE6IEU0MDIKICAgICAgICAgICAgICAgICAgICBuYW1lc19pbiwgc2F5c19ib3RfbmFtZSkKCiMgVGhlIGNsYXNzaWZpZXIgYW5zd2VycyB0d28gY2hhcmFjdGVycy4gQSB0aGlyZCBvbmUgaXMgYSBkZWNpc2lvbiBhbmQgYQojIHNoYXBlLCBhbmQgYW55dGhpbmcgZWxzZSBpcyBubyBhbnN3ZXIgYXQgYWxsLgpjaGVjaygiQTMgaXMgYW4gYW5zd2VyIHdpdGggYSBkZWVwIHNoYXBlIiwKICAgICAgcHJlc2VuY2UuX3BhcnNlX3ZlcmRpY3QoIkEzIiksICgiYW5zd2VyIiwgImRlZXAiKSkKY2hlY2soIlcxIGlzIGEgd2FpdCB3aXRoIGFuIGFzaWRlIHNoYXBlIiwKICAgICAgcHJlc2VuY2UuX3BhcnNlX3ZlcmRpY3QoIlcxIiksICgid2FpdCIsICJhc2lkZSIpKQpjaGVjaygiUTIgaXMgcXVpZXQgd2l0aCBhIHF1ZXN0aW9uIHNoYXBlIiwKICAgICAgcHJlc2VuY2UuX3BhcnNlX3ZlcmRpY3QoIlEyIiksICgicXVpZXQiLCAicXVlc3Rpb24iKSkKY2hlY2soIm5vbnNlbnNlIGlzIG5vIGRlY2lzaW9uIiwKICAgICAgcHJlc2VuY2UuX3BhcnNlX3ZlcmRpY3QoImhtIiksIChOb25lLCAiIikpCmNoZWNrKCJhbiBlbXB0eSBhbnN3ZXIgaXMgbm8gZGVjaXNpb24iLAogICAgICBwcmVzZW5jZS5fcGFyc2VfdmVyZGljdCgiIiksIChOb25lLCAiIikpCgoKY2xhc3MgRmFrZVVzZXI6CiAgICBkZWYgX19pbml0X18oc2VsZiwgdWlkLCBuYW1lLCBib3Q9RmFsc2UpOgogICAgICAgIHNlbGYuaWQgPSB1aWQKICAgICAgICBzZWxmLmRpc3BsYXlfbmFtZSA9IG5hbWUKICAgICAgICBzZWxmLmdsb2JhbF9uYW1lID0gbmFtZQogICAgICAgIHNlbGYubmFtZSA9IG5hbWUKICAgICAgICBzZWxmLmJvdCA9IGJvdAoKCmNsYXNzIEZha2VSZWY6CiAgICBkZWYgX19pbml0X18oc2VsZiwgbWVzc2FnZV9pZCk6CiAgICAgICAgc2VsZi5tZXNzYWdlX2lkID0gbWVzc2FnZV9pZAoKCmNsYXNzIEZha2VNZXNzYWdlOgogICAgX3NlcSA9IDAKCiAgICBkZWYgX19pbml0X18oc2VsZiwgY29udGVudCwgYXV0aG9yLCBtaWQ9Tm9uZSwgcmVmZXJlbmNlPU5vbmUpOgogICAgICAgIGlmIG1pZCBpcyBOb25lOgogICAgICAgICAgICBGYWtlTWVzc2FnZS5fc2VxICs9IDEKICAgICAgICAgICAgbWlkID0gZiJte0Zha2VNZXNzYWdlLl9zZXF9IgogICAgICAgIHNlbGYuY29udGVudCA9IGNvbnRlbnQKICAgICAgICBzZWxmLmF1dGhvciA9IGF1dGhvcgogICAgICAgIHNlbGYuaWQgPSBtaWQKICAgICAgICBzZWxmLnJlZmVyZW5jZSA9IHJlZmVyZW5jZQogICAgICAgIHNlbGYucmVmZXJlbmNlZF9tZXNzYWdlID0gTm9uZQoKCkJPVF9JRCA9ICJib3QtaWQiCk5BTUVTID0gKCJsYWluMiIsICJsYWluIiwgImxhaW55IikKUk9TVEVSID0gW3siaWQiOiAiMSIsICJuYW1lIjogIkxhaW4iLCAicGxhaW4iOiAiTGFpbiJ9LAogICAgICAgICAgeyJpZCI6ICIyIiwgIm5hbWUiOiAiSmFkZSIsICJwbGFpbiI6ICJKYWRlIn1dCkNPTExJU0lPTlMgPSBuYW1lX2NvbGxpc2lvbnMoTkFNRVMsIFJPU1RFUikKY2hlY2soInRoZSBib3QncyBzaG9ydCBuYW1lIGNsYXNoZXMgd2l0aCBzb21lYm9keSBpbiB0aGUgcm9vbSIsCiAgICAgIENPTExJU0lPTlMsIHsibGFpbiI6ICJMYWluIn0pCgojIEEgbmFtZSBhdCB0aGUgZnJvbnQgb2YgdGhlIG1lc3NhZ2UgaXMgYW4gYWRkcmVzcy4gQSBuYW1lIGluIHRoZSBtaWRkbGUKIyBvZiBhIHNlbnRlbmNlIGlzIHNvbWVib2R5IHRhbGtpbmcgYWJvdXQgdGhlIGJvdC4KY2hlY2soIidTdXAgbGFpbicgYWRkcmVzc2VzIHRoZSBib3QiLAogICAgICBhZGRyZXNzZXNfYm90KCJTdXAgbGFpbiIsIE5BTUVTLCBleGNsdWRlPUNPTExJU0lPTlMpLCBUcnVlKQpjaGVjaygiJ0xhaW55IGxhaW55IG9keXNzZXknIGFkZHJlc3NlcyB0aGUgYm90IiwKICAgICAgYWRkcmVzc2VzX2JvdCgiTGFpbnkgbGFpbnkgb2R5c3NleSwgd2hvcyB0aGUgd2lzZXN0IiwgTkFNRVMsCiAgICAgICAgICAgICAgICAgICAgZXhjbHVkZT1DT0xMSVNJT05TKSwgVHJ1ZSkKY2hlY2soIidJIGxvdmUgbGFpbjIgbW9yZSB0aGFuIHlvdScgZG9lcyBub3QgYWRkcmVzcyB0aGUgYm90IiwKICAgICAgYWRkcmVzc2VzX2JvdCgiRSB5ZXUgbGFpbjIgaG9uIGNhIHRvaSIsIE5BTUVTLCBleGNsdWRlPUNPTExJU0lPTlMpLAogICAgICBGYWxzZSkKY2hlY2soImEgYmFyZSBuYW1lIHRoYXQgYmVsb25ncyB0byBzb21lYm9keSBlbHNlIGlzIG5vdCBhbiBhZGRyZXNzIiwKICAgICAgYWRkcmVzc2VzX2JvdCgiTGFpbiIsIE5BTUVTLCBleGNsdWRlPUNPTExJU0lPTlMpLCBGYWxzZSkKY2hlY2soIidVIGhlYXIgbWUsIGxhaW4/JyBpcyBub3QgYSBmcm9udC1vZi1tZXNzYWdlIGFkZHJlc3MiLAogICAgICBhZGRyZXNzZXNfYm90KCJVIGhlYXIgbWUsIGxhaW4/IiwgTkFNRVMsIGV4Y2x1ZGU9Q09MTElTSU9OUyksIEZhbHNlKQpjaGVja190cnVlKCJ0aGUgbmFtZSBpcyBub3RpY2VkIGluIHBhc3NpbmciLAogICAgICAgICAgIHNheXNfYm90X25hbWUoIk3hu5F0IGNo4bqvYyBsYWluMiBjxrDhu5twIGx1w7RuIGUiLCBOQU1FUykpCmNoZWNrKCJ0aGUgbmFtZXMgdGhhdCBhcmUgdXNlZCBhcmUgZm91bmQiLAogICAgICBuYW1lc19pbigiTGFpbnkgbGFpbnkgb2R5c3NleSIsIE5BTUVTKSwgKCJsYWlueSIsKSkKCiMgVGhlIHdob2xlIGRlY2lzaW9uLCB3aXRoIHRoZSBjbGFzc2lmaWVyIHN0dWJiZWQgb3V0IHNvIHRoZSBzdHJ1Y3R1cmFsCiMgY2hlY2tzIGNhbiBiZSB0ZXN0ZWQgd2l0aG91dCB0aGUgbmV0d29yay4KQ0FMTFMgPSBbXQoKCmFzeW5jIGRlZiBzdHViX2NsYXNzaWZpZXIodGV4dCwgKiprd2FyZ3MpOgogICAgQ0FMTFMuYXBwZW5kKCh0ZXh0LCBrd2FyZ3MpKQogICAgcmV0dXJuIFNUVUJbMF0KCgpTVFVCID0gWyhUcnVlLCBGYWxzZSwgInF1ZXN0aW9uIildCnByZXNlbmNlLmNsYXNzaWZ5X3JlcGx5ID0gc3R1Yl9jbGFzc2lmaWVyCgpKQURFID0gRmFrZVVzZXIoIjIiLCAiSmFkZSIpCkRBTUlBTiA9IEZha2VVc2VyKCIxIiwgIkxhaW4iKQoKCmFzeW5jIGRlZiBkZWNpZGVfcHJvYmUobWVzc2FnZSwgKiprd2FyZ3MpOgogICAgQ0FMTFMuY2xlYXIoKQogICAgYmFzZSA9IGRpY3QoaXNfZG09RmFsc2UsIHNoYXJlZD1UcnVlLCBib3RfdXNlcl9pZD1CT1RfSUQsCiAgICAgICAgICAgICAgICBib3RfbmFtZXM9TkFNRVMsIGJvdF9tZXNzYWdlX2lkcz1zZXQoKSwgY2hhdF9vbj1UcnVlLAogICAgICAgICAgICAgICAgcm9zdGVyPVJPU1RFUiwgYXV0aG9yX25hbWU9IkphZGUiLCByb3N0ZXJfbGluZT0iTGFpbiwgSmFkZSIsCiAgICAgICAgICAgICAgICBib3RfbmFtZT0iTGFpbiIsIHJlY2VudD0oKSwgcmVwbHlfdG89IiIsCiAgICAgICAgICAgICAgICBib3Rfc3Bva2Vfc2Vjb25kcz1Ob25lLCBjYWNoZV9leHRyYT0idGVzdCIpCiAgICBiYXNlLnVwZGF0ZShrd2FyZ3MpCiAgICByZXR1cm4gYXdhaXQgcHJlc2VuY2UuZGVjaWRlKG1lc3NhZ2UsICoqYmFzZSkKCgphc3luYyBkZWYgcHJlc2VuY2VfcHJvYmUoKToKICAgICMgQSBtZW50aW9uIGlzIGV4YWN0IGFuZCBmcmVlLgogICAgZCA9IGF3YWl0IGRlY2lkZV9wcm9iZShGYWtlTWVzc2FnZShmIjxAe0JPVF9JRH0+IGhlbGxvIiwgSkFERSkpCiAgICBjaGVjaygiYSBtZW50aW9uIGlzIGFuc3dlcmVkIiwgZC5yZXBseSwgVHJ1ZSkKICAgIGNoZWNrKCJhIG1lbnRpb24gZG9lcyBub3QgcmVhY2ggdGhlIG1vZGVsIiwgbGVuKENBTExTKSwgMCkKCiAgICAjIEEgcmVwbHkgdG8gdGhlIGJvdCBpcyBleGFjdCB0b28uCiAgICBib3RfaWRzID0geyJib3QtbWVzc2FnZS0xIn0KICAgIGQgPSBhd2FpdCBkZWNpZGVfcHJvYmUoCiAgICAgICAgRmFrZU1lc3NhZ2UoImhlbGxvIiwgSkFERSwgcmVmZXJlbmNlPUZha2VSZWYoImJvdC1tZXNzYWdlLTEiKSksCiAgICAgICAgYm90X21lc3NhZ2VfaWRzPWJvdF9pZHMpCiAgICBjaGVjaygiYSByZXBseSB0byB0aGUgYm90IGlzIGFuc3dlcmVkIiwgZC5yZXBseSwgVHJ1ZSkKICAgIGNoZWNrKCJhIHJlcGx5IHRvIHRoZSBib3QgZG9lcyBub3QgcmVhY2ggdGhlIG1vZGVsIiwgbGVuKENBTExTKSwgMCkKCiAgICAjIFRoZSBib3QncyBuYW1lIGF0IHRoZSBmcm9udCBpcyBhbiBhZGRyZXNzLgogICAgZCA9IGF3YWl0IGRlY2lkZV9wcm9iZShGYWtlTWVzc2FnZSgiU3VwIGxhaW4iLCBKQURFKSkKICAgIGNoZWNrKCJhIG5hbWUgYXQgdGhlIGZyb250IGlzIGFuc3dlcmVkIiwgZC5yZXBseSwgVHJ1ZSkKICAgIGNoZWNrKCJhIG5hbWUgYXQgdGhlIGZyb250IGRvZXMgbm90IHJlYWNoIHRoZSBtb2RlbCIsIGxlbihDQUxMUyksIDApCgogICAgIyBBIG5hbWUgaW4gcGFzc2luZyBpcyB0aGUgbW9kZWwncyBidXNpbmVzcy4KICAgIGQgPSBhd2FpdCBkZWNpZGVfcHJvYmUoRmFrZU1lc3NhZ2UoIkUgeWV1IGxhaW4yIGhvbiBjYSB0b2kiLCBKQURFKSkKICAgIGNoZWNrKCJhIG5hbWUgaW4gcGFzc2luZyBpcyBkZWNpZGVkIGJ5IHRoZSBtb2RlbCIsIGxlbihDQUxMUyksIDEpCiAgICBjaGVja190cnVlKCJ0aGUgbW9kZWwgaXMgdG9sZCB0aGUgbmFtZSBpcyB0aGVyZSIsCiAgICAgICAgICAgICAgICJuYW1lIGFwcGVhcnMiIGluIENBTExTWzBdWzFdLmdldCgibmFtZV9ub3RlIiwgIiIpKQoKICAgICMgQSBiYXJlIG5hbWUgdGhhdCBiZWxvbmdzIHRvIHNvbWVib2R5IGVsc2UgaW4gdGhlIHJvb20gaXMgdGhlCiAgICAjIG1vZGVsJ3MgYnVzaW5lc3MgdG9vLgogICAgZCA9IGF3YWl0IGRlY2lkZV9wcm9iZShGYWtlTWVzc2FnZSgiTGFpbiIsIERBTUlBTikpCiAgICBjaGVjaygiYSBiYXJlIGNsYXNoaW5nIG5hbWUgaXMgZGVjaWRlZCBieSB0aGUgbW9kZWwiLCBsZW4oQ0FMTFMpLCAxKQogICAgY2hlY2tfdHJ1ZSgidGhlIG1vZGVsIGlzIHRvbGQgYWJvdXQgdGhlIGNsYXNoIiwKICAgICAgICAgICAgICAgImFsc28gdGhlIG5hbWUgb2Ygc29tZWJvZHkgZWxzZSIgaW4gQ0FMTFNbMF1bMV0uZ2V0KCJuYW1lX25vdGUiLCAiIikpCgogICAgIyBFdmVyeXRoaW5nIGVsc2UgaXMgdGhlIG1vZGVsJ3MgYnVzaW5lc3MuCiAgICBkID0gYXdhaXQgZGVjaWRlX3Byb2JlKEZha2VNZXNzYWdlKCJjYW4geW91IGxvb2sgdXAgdGhlIE52aWRpYT8iLCBKQURFKSkKICAgIGNoZWNrKCJhbiBvcmRpbmFyeSBtZXNzYWdlIHJlYWNoZXMgdGhlIG1vZGVsIiwgbGVuKENBTExTKSwgMSkKICAgIGNoZWNrKCJ0aGUgbW9kZWwgZGVjaWRlZCB0byBhbnN3ZXIiLCBkLnJlcGx5LCBUcnVlKQoKICAgICMgVGhlIHRocmVlIHN0YXRlcyBjb21lIGJhY2sgYXMgdGhleSBzaG91bGQuCiAgICBTVFVCWzBdID0gKEZhbHNlLCBUcnVlLCAiYXNpZGUiKQogICAgZCA9IGF3YWl0IGRlY2lkZV9wcm9iZShGYWtlTWVzc2FnZSgiY2FuIHlvdSBsb29rIHVwIHRoZSBOdmlkaWEiLCBKQURFKSkKICAgIGNoZWNrKCJhbiB1bmZpbmlzaGVkIG1lc3NhZ2Ugd2FpdHMiLCBkLndhaXQsIFRydWUpCiAgICBjaGVjaygiYW4gdW5maW5pc2hlZCBtZXNzYWdlIGlzIG5vdCBhbnN3ZXJlZCIsIGQucmVwbHksIEZhbHNlKQogICAgY2hlY2soInRoZSBzaGFwZSBpcyBjYXJyaWVkIHRocm91Z2giLCBkLnNoYXBlLCAiYXNpZGUiKQoKICAgICMgVGhlIGZpbmFsIHBhc3MgbmV2ZXIgbGVhdmVzIHRoZSBtZXNzYWdlIHVuYW5zd2VyZWQuCiAgICBkID0gYXdhaXQgZGVjaWRlX3Byb2JlKEZha2VNZXNzYWdlKCJjYW4geW91IGxvb2sgdXAgdGhlIE52aWRpYSIsIEpBREUpLAogICAgICAgICAgICAgICAgICAgICAgICAgICBmaW5hbD1UcnVlKQogICAgY2hlY2soInRoZSBmaW5hbCBwYXNzIGFuc3dlcnMgYSBtZXNzYWdlIHRoYXQgaXMgc3RpbGwgdW5maW5pc2hlZCIsCiAgICAgICAgICAoZC5yZXBseSwgZC53YWl0KSwgKFRydWUsIEZhbHNlKSkKCiAgICBTVFVCWzBdID0gKEZhbHNlLCBGYWxzZSwgImFzaWRlIikKICAgIGQgPSBhd2FpdCBkZWNpZGVfcHJvYmUoRmFrZU1lc3NhZ2UoIm9rIiwgSkFERSkpCiAgICBjaGVjaygiYSBxdWlldCB2ZXJkaWN0IGlzIHF1aWV0IiwgKGQucmVwbHksIGQud2FpdCksIChGYWxzZSwgRmFsc2UpKQoKICAgICMgQSBmYWlsZWQgY2xhc3NpZmllciBpcyBxdWlldCByYXRoZXIgdGhhbiB3cm9uZy4KICAgIGFzeW5jIGRlZiBicm9rZW4odGV4dCwgKiprd2FyZ3MpOgogICAgICAgIHJldHVybiBOb25lCgogICAgcHJlc2VuY2UuY2xhc3NpZnlfcmVwbHkgPSBicm9rZW4KICAgIGQgPSBhd2FpdCBkZWNpZGVfcHJvYmUoRmFrZU1lc3NhZ2UoInNvbWV0aGluZyIsIEpBREUpKQogICAgY2hlY2soImEgZmFpbGVkIGNsYXNzaWZpZXIgc3RheXMgcXVpZXQiLCBkLnJlcGx5LCBGYWxzZSkKICAgIHByZXNlbmNlLmNsYXNzaWZ5X3JlcGx5ID0gc3R1Yl9jbGFzc2lmaWVyCgoKYXN5bmNpby5ydW4ocHJlc2VuY2VfcHJvYmUoKSkKCiMgVGhlIHJlcGx5IHNpemUgZm9sbG93cyB0aGUgdHVybiwgYW5kIHRoZSBtb2RlbCBpcyB0b2xkIHdoeS4KZnJvbSBjb25maWcgaW1wb3J0IGV4dHJhX2JvZHlfZm9yICAjIG5vcWE6IEU0MDIKCmNoZWNrKCJ0aGlua2luZyBjYW4gYmUgc3dpdGNoZWQgb2ZmIGZvciBhIHNob3J0IHJlcGx5IiwKICAgICAgZXh0cmFfYm9keV9mb3IoIkxhZ3VuYSIsIHRoaW5raW5nPUZhbHNlKSwKICAgICAgeyJjaGF0X3RlbXBsYXRlX2t3YXJncyI6IHsiZW5hYmxlX3RoaW5raW5nIjogRmFsc2V9fSkKY2hlY2soInRoaW5raW5nIGlzIG9uIGJ5IGRlZmF1bHQiLAogICAgICBleHRyYV9ib2R5X2ZvcigiTGFndW5hIiwgdGhpbmtpbmc9VHJ1ZSksCiAgICAgIHsiY2hhdF90ZW1wbGF0ZV9rd2FyZ3MiOiB7ImVuYWJsZV90aGlua2luZyI6IFRydWV9fSkKCmltcG9ydCBpbnNwZWN0ICAjIG5vcWE6IEU0MDIKCmNoZWNrX3RydWUoInRoZSBhZ2VudCB0YWtlcyB0aGUgdHVybiBzaGFwZSIsCiAgICAgICAgICAgInNoYXBlIiBpbiBpbnNwZWN0LnNpZ25hdHVyZShhZ2VudC5nZXRfbnZpZGlhX3Jlc3BvbnNlX2Z1bGwpLnBhcmFtZXRlcnMpCmNoZWNrX3RydWUoInRoZSBhZ2VudCBsb29wIHRha2VzIHRoZSB0aGlua2luZyBzd2l0Y2giLAogICAgICAgICAgICJ0aGlua2luZyIgaW4gaW5zcGVjdC5zaWduYXR1cmUoYWdlbnQucnVuX2FnZW50X2xvb3ApLnBhcmFtZXRlcnMpCmNoZWNrX3RydWUoInRoZSBhZ2VudCBsb29wIGNhbiBpbnNpc3Qgb24gYSB0b29sIiwKICAgICAgICAgICAicmVxdWlyZV90b29sIiBpbiBpbnNwZWN0LnNpZ25hdHVyZShhZ2VudC5ydW5fYWdlbnRfbG9vcCkucGFyYW1ldGVycykKCiMgVGhlIGFuc3dlci1mcm9tLW1lbW9yeSByZXBhaXIuIFRoZSBub3RlIGhhcyB0byBwdXQgdGhlIG1lc3NhZ2UgYmFjayBpbgojIGZyb250IG9mIHRoZSBtb2RlbCwgYmVjYXVzZSBhZnRlciB0aGUgbm90ZSB0aGUgbGFzdCB0aGluZyBpbiB0aGUKIyBjb252ZXJzYXRpb24gaXMgdGhlIG5vdGUuCl9hZ2VudF9zb3VyY2UgPSBpbnNwZWN0LmdldHNvdXJjZShhZ2VudCkKY2hlY2tfdHJ1ZSgidGhlIHJldHJ5IHB1dHMgdGhlIG1lc3NhZ2UgYmFjayBpbiBmcm9udCBvZiB0aGUgbW9kZWwiLAogICAgICAgICAgICJUaGUgbWVzc2FnZSB0byBhbnN3ZXIgaXMgdGhpcyBvbmUiIGluIF9hZ2VudF9zb3VyY2UpCmNoZWNrX3RydWUoInRoZSByZXRyeSBub3RlIGtlZXBzIHRoZSB2b2ljZSIsCiAgICAgICAgICAgInRvbmUgb2YgdGhlIGNvbnZlcnNhdGlvbiIgaW4gYWdlbnQuVE9PTF9SRVRSWV9OT1RFKQpjaGVja190cnVlKCJ0aGUgcmV0cnkgbm90ZSBkb2VzIG5vdCBsZWFrIHRoZSBtYWNoaW5lcnkiLAogICAgICAgICAgICJjbGFzc2lmaWVkIiBub3QgaW4gYWdlbnQuVE9PTF9SRVRSWV9OT1RFKQoKIyBUaGUgbG9va3VwIGNoZWNrIGlzIGEgbW9kZWwgY2FsbCwgYW5kIHRoZSBwcm9tcHQgaGFzIHRvIGFzayB0aGUgcmlnaHQKIyBxdWVzdGlvbi4KY2hlY2tfdHJ1ZSgidGhlIGxvb2t1cCBjaGVjayBhc2tzIGFib3V0IHNvdXJjZXMiLAogICAgICAgICAgICJjb21lIGZyb20gYSBzb3VyY2UiIGluIHByZXNlbmNlLl9MT09LVVBfUFJPTVBUKQpjaGVja190cnVlKCJ0aGUgbG9va3VwIGNoZWNrIHRlbGxzIHBlcnNvbmFsIHRhbGsgYXBhcnQiLAogICAgICAgICAgICJhYm91dCB0aGVtc2VsdmVzIiBpbiBwcmVzZW5jZS5fTE9PS1VQX1BST01QVCkKCnByaW50KCkKcHJpbnQoIj0iICogNzApCnByaW50KGYie1BBU1NFRH0ve1BBU1NFRCArIGxlbihGQUlMRUQpfSBjaGVja3MgcGFzc2VkIikKaWYgRkFJTEVEOgogICAgZm9yIGYgaW4gRkFJTEVEOgogICAgICAgIHByaW50KGYiICBGQUlMRUQ6IHtmfSIpCiAgICBzeXMuZXhpdCgxKQpwcmludCgiQUxMIEdSRUVOIikK
+"""A regression pass over everything that was changed.
+
+The bot has grown a lot of moving parts, and the changes here touch the
+prompt, the answer path, the tools and the memory layer at once. So this
+imports every module, then exercises each of the new pieces.
+
+    python tests/regress.py
+"""
+
+import asyncio
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _env import ROOT, need  # noqa: E402
+
+sys.path.insert(0, ROOT)
+
+need("SUPABASE_KEY", "NVIDIA_API_KEY")
+
+# Some of the checks write files: the file tools, and the Kaggle
+# carry-over. They do it in a scratch directory, so that a test run
+# leaves nothing behind in the repository. The bot's own file tools work
+# out where to write from the working directory, so this has to happen
+# before the bot is imported.
+_SCRATCH = tempfile.mkdtemp(prefix="bot-regress-")
+os.chdir(_SCRATCH)
+
+FAILED = []
+PASSED = 0
+
+
+def check(label, got, want):
+    global PASSED
+    if got == want:
+        PASSED += 1
+        print(f"  ok   {label}")
+    else:
+        FAILED.append(label)
+        print(f"  FAIL {label}\n         got:  {got!r}\n         want: {want!r}")
+
+
+def check_true(label, cond):
+    check(label, bool(cond), True)
+
+
+print("=" * 70)
+print("EVERY MODULE IMPORTS")
+print("=" * 70)
+
+MODULES = [
+    "cache", "config", "context", "discord_utils", "guard", "huggingface",
+    "jobs", "kaggle_backend", "latex_render", "mathrender", "memory",
+    "papers", "people", "presence", "prompts", "sandbox", "storage", "tools",
+]
+
+for name in MODULES:
+    try:
+        __import__(name)
+        PASSED += 1
+        print(f"  ok   {name}")
+    except Exception as exc:
+        FAILED.append(f"import {name}")
+        print(f"  FAIL {name}: {type(exc).__name__}: {exc}")
+
+# agent imports last: it pulls in nearly everything.
+try:
+    import agent  # noqa: E402
+
+    PASSED += 1
+    print("  ok   agent")
+except Exception as exc:
+    FAILED.append("import agent")
+    print(f"  FAIL agent: {type(exc).__name__}: {exc}")
+
+print()
+print("=" * 70)
+print("THE PROVIDER CHAIN")
+print("=" * 70)
+
+from config import provider_chain, vision_models, BOLT_MODEL  # noqa: E402
+
+check("the chain is Laguna, MiniMax, Nemotron",
+      [n for n, _, _ in provider_chain()], ["Laguna", "MiniMax", "NVIDIA"])
+check("the vision chain is Nemotron",
+      [n for n, _, _ in vision_models()], ["NVIDIA"])
+
+# The answer and the scan are two different models on purpose: Laguna
+# answers, MiniMax reads the room. If they were the same, the bot would
+# be marking its own homework.
+import presence  # noqa: E402
+from config import LAGUNA_MODEL, MINIMAX_MODEL, NVIDIA_MODEL  # noqa: E402
+
+check("the answer chain starts with Laguna",
+      provider_chain()[0][2], LAGUNA_MODEL)
+check("the scanner is Bolt", presence.scanner_models()[0], BOLT_MODEL)
+check("the scanner falls back to Nemotron",
+      presence.scanner_models(), (BOLT_MODEL, NVIDIA_MODEL))
+check_true("the scanner does not scan with the answering model",
+           LAGUNA_MODEL not in presence.scanner_models())
+check_true("the scanner does not fall back to Groq",
+           "groq" not in " ".join(presence.scanner_models()).lower())
+
+print()
+print("=" * 70)
+print("NO SECRETS IN THE SOURCE")
+print("=" * 70)
+
+import re  # noqa: E402
+
+ROOT_DIR = ROOT
+PATTERNS = {
+    "kaggle token": r"KGAT_[A-Za-z0-9]{20,}",
+    "hf token": r"hf_[A-Za-z0-9]{30,}",
+    "nvidia key": r"nvapi-[A-Za-z0-9_-]{30,}",
+    "github pat": r"github_pat_[A-Za-z0-9_]{20,}",
+    "discord token": r"MTU2OTY0NDU1[A-Za-z0-9._-]{20,}",
+    "supabase key": r"sb_secret_[A-Za-z0-9_]{20,}",
+}
+
+leaks = []
+for dirpath, dirnames, filenames in os.walk(ROOT_DIR):
+    dirnames[:] = [d for d in dirnames
+                   if d not in {"node_modules", "__pycache__", "bot_files", ".git"}]
+    for name in sorted(filenames):
+        if name.endswith((".pyc", ".pyo")):
+            continue
+        # The local .env is where the keys are *meant* to be: it is in
+        # .gitignore and never goes up to GitHub. What this check is
+        # about is a key written into a file that does go up.
+        if name == ".env" or name.startswith(".env."):
+            continue
+        path = os.path.join(dirpath, name)
+        try:
+            body = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        for label, pattern in PATTERNS.items():
+            if re.search(pattern, body):
+                leaks.append(f"{os.path.relpath(path, ROOT_DIR)}: {label}")
+
+check("no live credentials in the source", leaks, [])
+
+print()
+print("=" * 70)
+print("THE KAGGLE CARRY-OVER (without the network)")
+print("=" * 70)
+
+import kaggle_backend as kb  # noqa: E402
+
+STATE = "kaggle_unit_state"
+os.makedirs(STATE, exist_ok=True)
+for stale in os.listdir(STATE):
+    os.remove(os.path.join(STATE, stale))
+with open(os.path.join(STATE, "answer.txt"), "w") as fh:
+    fh.write("the answer is 42")
+
+preamble, carried = kb._carry_preamble(STATE)
+check("the file is carried", carried, ["answer.txt"])
+check_true("the preamble writes the file", "answer.txt" in preamble)
+check_true("the preamble targets the working directory", "/kaggle/working" in preamble)
+
+# The preamble must compile and must actually write, with the brackets in
+# the right place. Without them Python reads it as "path, or else write".
+compile(preamble, "main.py", "exec")
+import base64  # noqa: E402
+import pathlib  # noqa: E402
+
+ns = {"pathlib": pathlib, "base64": base64}
+exec(preamble, ns)
+check_true("the preamble wrote the file",
+           os.path.exists(os.path.join(os.getcwd(), "answer.txt")))
+
+check("the default state dir is the workspace one",
+      kb._state_dir(""), kb.STATE_ROOT)
+check_true("the state dir is under the workspace",
+           kb.STATE_ROOT.endswith(os.path.join("bot_files", "kaggle")))
+
+print()
+print("=" * 70)
+print("THE FILE TOOLS")
+print("=" * 70)
+
+import tools  # noqa: E402
+
+
+async def file_probe():
+    await tools.write_file("probe/f.txt", "one\ntwo\n")
+    read = await tools.read_file("probe/f.txt")
+    await tools.edit_file("probe/f.txt", "one", "ONE")
+    edited = await tools.read_file("probe/f.txt")
+    missing = await tools.read_file("probe/nope.txt")
+    escaped = await tools.read_file("../../etc/passwd")
+    return read, edited, missing, escaped
+
+
+read, edited, missing, escaped = asyncio.run(file_probe())
+check("a file is written and read", read, "one\ntwo\n")
+check("a file is edited", edited, "ONE\ntwo\n")
+check_true("a missing file says so", "not found" in missing.lower())
+check_true("the workspace cannot be escaped", "access denied" in escaped.lower())
+
+print()
+print("=" * 70)
+print("THE PROMPT")
+print("=" * 70)
+
+from prompts import build_system_prompt, turn_note  # noqa: E402
+
+prompt = build_system_prompt({}, "", shared=False,
+                              speaker={"id": "1", "name": "Jade", "plain": "Jade"},
+                              roster=[{"id": "1", "name": "Jade", "plain": "Jade"},
+                                      {"id": "2", "name": "Lain", "plain": "Lain"}])
+check_true("the prompt has the register rules", "Two registers" in prompt)
+check_true("the prompt has the quiet rules", "When to answer" in prompt)
+check_true("the prompt names the people", "Jade" in prompt and "Lain" in prompt)
+check_true("the turn note says how to choose", "WORKING" in turn_note())
+check_true("the prompt does not carry a credential",
+           "KGAT_" not in prompt and "hf_" not in prompt.split("Hub token:")[-1][:20])
+
+print()
+print("=" * 70)
+print("THE PRESENCE DECISION")
+print("=" * 70)
+
+import presence  # noqa: E402
+from people import (addresses_bot, bot_name_variants, name_collisions,  # noqa: E402
+                    names_in, says_bot_name)
+
+# The classifier answers two characters. A third one is a decision and a
+# shape, and anything else is no answer at all.
+check("A3 is an answer with a deep shape",
+      presence._parse_verdict("A3"), ("answer", "deep"))
+check("W1 is a wait with an aside shape",
+      presence._parse_verdict("W1"), ("wait", "aside"))
+check("Q2 is quiet with a question shape",
+      presence._parse_verdict("Q2"), ("quiet", "question"))
+check("nonsense is no decision",
+      presence._parse_verdict("hm"), (None, ""))
+check("an empty answer is no decision",
+      presence._parse_verdict(""), (None, ""))
+
+
+class FakeUser:
+    def __init__(self, uid, name, bot=False):
+        self.id = uid
+        self.display_name = name
+        self.global_name = name
+        self.name = name
+        self.bot = bot
+
+
+class FakeRef:
+    def __init__(self, message_id):
+        self.message_id = message_id
+
+
+class FakeMessage:
+    _seq = 0
+
+    def __init__(self, content, author, mid=None, reference=None):
+        if mid is None:
+            FakeMessage._seq += 1
+            mid = f"m{FakeMessage._seq}"
+        self.content = content
+        self.author = author
+        self.id = mid
+        self.reference = reference
+        self.referenced_message = None
+
+
+BOT_ID = "bot-id"
+NAMES = ("lain2", "lain", "lainy")
+ROSTER = [{"id": "1", "name": "Lain", "plain": "Lain"},
+          {"id": "2", "name": "Jade", "plain": "Jade"}]
+COLLISIONS = name_collisions(NAMES, ROSTER)
+check("the bot's short name clashes with somebody in the room",
+      COLLISIONS, {"lain": "Lain"})
+
+# A name at the front of the message is an address. A name in the middle
+# of a sentence is somebody talking about the bot.
+check("'Sup lain' addresses the bot",
+      addresses_bot("Sup lain", NAMES, exclude=COLLISIONS), True)
+check("'Lainy lainy odyssey' addresses the bot",
+      addresses_bot("Lainy lainy odyssey, whos the wisest", NAMES,
+                    exclude=COLLISIONS), True)
+check("'I love lain2 more than you' does not address the bot",
+      addresses_bot("E yeu lain2 hon ca toi", NAMES, exclude=COLLISIONS),
+      False)
+check("a bare name that belongs to somebody else is not an address",
+      addresses_bot("Lain", NAMES, exclude=COLLISIONS), False)
+check("'U hear me, lain?' is not a front-of-message address",
+      addresses_bot("U hear me, lain?", NAMES, exclude=COLLISIONS), False)
+check_true("the name is noticed in passing",
+           says_bot_name("Mốt chắc lain2 cướp luôn e", NAMES))
+check("the names that are used are found",
+      names_in("Lainy lainy odyssey", NAMES), ("lainy",))
+
+# The whole decision, with the classifier stubbed out so the structural
+# checks can be tested without the network.
+CALLS = []
+
+
+async def stub_classifier(text, **kwargs):
+    CALLS.append((text, kwargs))
+    return STUB[0]
+
+
+STUB = [(True, False, "question")]
+presence.classify_reply = stub_classifier
+
+JADE = FakeUser("2", "Jade")
+DAMIAN = FakeUser("1", "Lain")
+
+
+async def decide_probe(message, **kwargs):
+    CALLS.clear()
+    base = dict(is_dm=False, shared=True, bot_user_id=BOT_ID,
+                bot_names=NAMES, bot_message_ids=set(), chat_on=True,
+                roster=ROSTER, author_name="Jade", roster_line="Lain, Jade",
+                bot_name="Lain", recent=(), reply_to="",
+                bot_spoke_seconds=None, cache_extra="test")
+    base.update(kwargs)
+    return await presence.decide(message, **base)
+
+
+async def presence_probe():
+    # A mention is exact and free.
+    d = await decide_probe(FakeMessage(f"<@{BOT_ID}> hello", JADE))
+    check("a mention is answered", d.reply, True)
+    check("a mention does not reach the model", len(CALLS), 0)
+
+    # A reply to the bot is exact too.
+    bot_ids = {"bot-message-1"}
+    d = await decide_probe(
+        FakeMessage("hello", JADE, reference=FakeRef("bot-message-1")),
+        bot_message_ids=bot_ids)
+    check("a reply to the bot is answered", d.reply, True)
+    check("a reply to the bot does not reach the model", len(CALLS), 0)
+
+    # The bot's name at the front is an address.
+    d = await decide_probe(FakeMessage("Sup lain", JADE))
+    check("a name at the front is answered", d.reply, True)
+    check("a name at the front does not reach the model", len(CALLS), 0)
+
+    # A name in passing is the model's business.
+    d = await decide_probe(FakeMessage("E yeu lain2 hon ca toi", JADE))
+    check("a name in passing is decided by the model", len(CALLS), 1)
+    check_true("the model is told the name is there",
+               "name appears" in CALLS[0][1].get("name_note", ""))
+
+    # A bare name that belongs to somebody else in the room is the
+    # model's business too.
+    d = await decide_probe(FakeMessage("Lain", DAMIAN))
+    check("a bare clashing name is decided by the model", len(CALLS), 1)
+    check_true("the model is told about the clash",
+               "also the name of somebody else" in CALLS[0][1].get("name_note", ""))
+
+    # Everything else is the model's business.
+    d = await decide_probe(FakeMessage("can you look up the Nvidia?", JADE))
+    check("an ordinary message reaches the model", len(CALLS), 1)
+    check("the model decided to answer", d.reply, True)
+
+    # The three states come back as they should.
+    STUB[0] = (False, True, "aside")
+    d = await decide_probe(FakeMessage("can you look up the Nvidia", JADE))
+    check("an unfinished message waits", d.wait, True)
+    check("an unfinished message is not answered", d.reply, False)
+    check("the shape is carried through", d.shape, "aside")
+
+    # The final pass never leaves the message unanswered.
+    d = await decide_probe(FakeMessage("can you look up the Nvidia", JADE),
+                           final=True)
+    check("the final pass answers a message that is still unfinished",
+          (d.reply, d.wait), (True, False))
+
+    STUB[0] = (False, False, "aside")
+    d = await decide_probe(FakeMessage("ok", JADE))
+    check("a quiet verdict is quiet", (d.reply, d.wait), (False, False))
+
+    # A failed classifier is quiet rather than wrong.
+    async def broken(text, **kwargs):
+        return None
+
+    presence.classify_reply = broken
+    d = await decide_probe(FakeMessage("something", JADE))
+    check("a failed classifier stays quiet", d.reply, False)
+    presence.classify_reply = stub_classifier
+
+
+asyncio.run(presence_probe())
+
+# The reply size follows the turn, and the model is told why.
+from config import extra_body_for  # noqa: E402
+
+check("thinking can be switched off for a short reply",
+      extra_body_for("Laguna", thinking=False),
+      {"chat_template_kwargs": {"enable_thinking": False}})
+check("thinking is on by default",
+      extra_body_for("Laguna", thinking=True),
+      {"chat_template_kwargs": {"enable_thinking": True}})
+
+import inspect  # noqa: E402
+
+check_true("the agent takes the turn shape",
+           "shape" in inspect.signature(agent.get_nvidia_response_full).parameters)
+check_true("the agent loop takes the thinking switch",
+           "thinking" in inspect.signature(agent.run_agent_loop).parameters)
+check_true("the agent loop can insist on a tool",
+           "require_tool" in inspect.signature(agent.run_agent_loop).parameters)
+
+# The answer-from-memory repair. The note has to put the message back in
+# front of the model, because after the note the last thing in the
+# conversation is the note.
+_agent_source = inspect.getsource(agent)
+check_true("the retry puts the message back in front of the model",
+           "The message to answer is this one" in _agent_source)
+check_true("the retry note keeps the voice",
+           "tone of the conversation" in agent.TOOL_RETRY_NOTE)
+check_true("the retry note does not leak the machinery",
+           "classified" not in agent.TOOL_RETRY_NOTE)
+
+# The lookup check is a model call, and the prompt has to ask the right
+# question.
+check_true("the lookup check asks about sources",
+           "come from a source" in presence._LOOKUP_PROMPT)
+check_true("the lookup check tells personal talk apart",
+           "about themselves" in presence._LOOKUP_PROMPT)
+
+print()
+print("=" * 70)
+print(f"{PASSED}/{PASSED + len(FAILED)} checks passed")
+if FAILED:
+    for f in FAILED:
+        print(f"  FAILED: {f}")
+    sys.exit(1)
+print("ALL GREEN")
