@@ -253,3 +253,39 @@ def kinship_for(person_id) -> tuple[str, tuple[str, ...]] | None:
     if not entry:
         return None
     return entry[0], tuple(entry[1])
+
+
+# --- Detached channels ----------------------------------------------------
+#
+# A detached channel knows everything and shares nothing.
+#
+# The bot's memory is a set of scopes: one per person, one per room. A
+# reply reads the scopes of the room it is in, so a room only ever knows
+# what was said in it.
+#
+# Some rooms need to know more than their own. A private room may need
+# the whole picture - every channel, every person - to do its job. But
+# what is learned there must not travel: the memories that come out of
+# a detached channel stay in it, and no other room's reply ever loads
+# them.
+#
+# This is the list of channels that get the whole picture. It is
+# configuration, so a channel can be detached without touching the
+# code, and nothing else is detached by accident.
+def _id_list(raw: str) -> set[str]:
+    """A comma-separated list of Discord ids."""
+    return {part.strip() for part in (raw or "").split(",") if part.strip()}
+
+
+DETACHED_CHANNELS = _id_list(os.getenv("DETACHED_CHANNEL_IDS", ""))
+DETACHED_CHANNELS |= _id_list(os.getenv("SECRETS_CHANNEL_ID", ""))
+# #secrets - the private room. It knows the whole picture; the rest of
+# the bot knows nothing about what happens in it.
+DETACHED_CHANNELS.add("1573589377744117881")
+
+
+def is_detached(channel_id) -> bool:
+    """Does this room know the whole picture and share nothing?"""
+    if not channel_id:
+        return False
+    return str(channel_id) in DETACHED_CHANNELS

@@ -8,6 +8,7 @@ imports every module, then exercises each of the new pieces.
 """
 
 import asyncio
+import inspect
 import os
 import sys
 import tempfile
@@ -308,6 +309,82 @@ check("the right kinship term is left alone",
       kinship_problem("mình giúp em nhé", "em"), "")
 check("the wrong kinship term for Damian is named",
       kinship_problem("em ơi, kể mình nghe", "anh"), "'Em'")
+
+# The acknowledgement opener. "Mình hiểu rồi, e mệt quá vì hôm nay
+# học nhiều quá" spends its first clause on nothing, and when every reply
+# starts that way it is a tic rather than a person.
+from guard import acknowledgement_opener, sanitize_reply  # noqa: E402
+
+check("the Vietnamese acknowledgement is named",
+      acknowledgement_opener("Mình hiểu rồi, e mệt quá"), "mình hiểu rồi")
+check("the English acknowledgement is named",
+      acknowledgement_opener("Got it, I'll check."), "got it")
+check("a reply that starts with content has no opener",
+      acknowledgement_opener("mệt quá à? ngủ sớm đi"), "")
+check("the acknowledgement is cut off the front",
+      sanitize_reply("Mình hiểu rồi, e mệt quá quá."),
+      "e mệt quá quá.")
+check("the English acknowledgement is cut off too",
+      sanitize_reply("Sure, I can do that."), "I can do that.")
+check("a reply that is only an acknowledgement is left alone",
+      sanitize_reply("Okay."), "Okay.")
+check("a reply with no acknowledgement is untouched",
+      sanitize_reply("mệt quá à? ngủ sớm đi nhé mình"),
+      "mệt quá à? ngủ sớm đi nhé mình")
+
+# The footer and the status line. Both are things the room reads, and
+# both were giving the game away: a "Step 1 -" line and a tool name in
+# the footer are the bot talking about its own insides.
+check("the footer is just the model",
+      agent._footer_for({"model": "poolside/laguna-xs-2.1",
+                         "tools_used": ["web_search"]}),
+      "poolside/laguna-xs-2.1")
+check_true("the status line has no step number",
+           "**Step" not in inspect.getsource(agent.run_agent_loop))
+
+# The detached room. It knows the whole picture and shares nothing, and
+# the two halves have to stay apart - the write list is what keeps a
+# secret in the room it was said in.
+from config import is_detached  # noqa: E402
+from scopes import scope_plan  # noqa: E402
+from presence import ChannelTracker, channel_scope  # noqa: E402
+
+SECRETS_CHANNEL = "1573589377744117881"
+MODEL_CHANNEL = "1569657875368902666"
+
+check_true("#secrets is a detached room", is_detached(SECRETS_CHANNEL))
+check_true("#model is not", not is_detached(MODEL_CHANNEL))
+
+_tracker = ChannelTracker()
+_tracker.note(MODEL_CHANNEL, "1499211380052721684")
+_tracker.note(MODEL_CHANNEL, "909453181916938301")
+
+_detached = asyncio.run(scope_plan(SECRETS_CHANNEL, "1499211380052721684",
+                                    tracker=_tracker))
+check_true("the detached room reads the whole picture",
+           channel_scope(MODEL_CHANNEL) in _detached.read
+           and "1499211380052721684" in _detached.read)
+check("the detached room writes only to itself",
+      _detached.write, [channel_scope(SECRETS_CHANNEL)])
+check("the detached room's conversation stays there",
+      _detached.primary, channel_scope(SECRETS_CHANNEL))
+
+_ordinary = asyncio.run(scope_plan(MODEL_CHANNEL, "1499211380052721684",
+                                    tracker=_tracker))
+check_true("an ordinary room does not read the detached scope",
+           channel_scope(SECRETS_CHANNEL) not in _ordinary.read)
+check_true("an ordinary room does not write the detached scope",
+           channel_scope(SECRETS_CHANNEL) not in _ordinary.write)
+check("an ordinary room reads the person and the room",
+      sorted(_ordinary.read),
+      sorted(["1499211380052721684", channel_scope(MODEL_CHANNEL)]))
+
+# The write list is a separate argument, because a memory learned in a
+# detached room must not go to every scope the reply could read.
+check_true("the agent takes the write scopes",
+           "write_scopes" in inspect.signature(agent.get_nvidia_response_full).parameters)
+check_true("the memory update uses the write scopes",
+           "scopes=write_scopes" in inspect.getsource(agent.get_nvidia_response_full))
 
 print()
 print("=" * 70)

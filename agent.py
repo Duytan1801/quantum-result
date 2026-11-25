@@ -220,16 +220,17 @@ def _cacheable(result: dict, user_message: str) -> bool:
 
 
 def _footer_for(result: dict) -> str:
-    """Build the small grey footer line: model + tools used.
+    """Build the small grey footer line: the model that answered.
 
     The model is the one that actually answered, not the one that was
     configured first - so the footer tells the truth about which model
     produced the reply.
+
+    Only the model. The tools that were used are not in the footer: they
+    are already in the room as the status line, and "web_search" in the
+    middle of a conversation is the bot talking about its own insides.
     """
-    parts = [result.get("model") or NVIDIA_MODEL]
-    if result.get("tools_used"):
-        parts.append(" · ".join(result["tools_used"]))
-    return " · ".join(parts)
+    return result.get("model") or NVIDIA_MODEL
 
 
 def _check_delegation_tool() -> bool:
@@ -1044,7 +1045,13 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
             # When a caller supplies on_step it does its own reporting (a
             # background job posts a throttled heartbeat). Sending both
             # meant two messages per step saying the same thing.
-            await channel.send(f"**Step {step_count}** - {' '.join(step_labels)}")
+            #
+            # No "Step 1 -" in front of it. The step number means nothing to
+            # the person reading the room, and the bold formatting is the
+            # loudest thing about it - it is the single most obviously
+            # machine-written line the bot posts. A person waiting for an
+            # answer says what they are doing, not which step they are on.
+            await channel.send(" ".join(step_labels))
         if on_step is not None:
             await on_step(step_count, max_steps, step_labels)
 
@@ -1233,7 +1240,8 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
                                    attachments=None, scopes=None,
                                    write_scope=None, shared: bool = False,
                                    speaker=None, roster=None, shape: str = "",
-                                   bot_name: str = "", bot_aliases=()):
+                                   bot_name: str = "", bot_aliases=(),
+                                   write_scopes=None):
     """Answer a message, persist the exchange, and return the answer plus metadata.
 
     `scopes` are the context keys to read from. A channel with more than one
@@ -1242,6 +1250,14 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
 
     `write_scope` is where the new rows are stored - the shared channel key
     when the room has more than one person, so the thread stays together.
+
+    `write_scopes` is where a *memory* learned in this turn is stored, which
+    is not always the same thing as where the conversation goes. It is a
+    list because a shared room stores what it learns under both the room's
+    key and the person's, so the fact is still known when somebody else
+    asks. A detached room - one that knows the whole picture but shares
+    nothing - writes only to its own key, so what is learned there stays
+    there. It defaults to `scopes`, which is what an ordinary room wants.
 
     `speaker` and `roster` say who is being talked to and who else is in
     the room. They are read from the channel, not from a list in the code,
@@ -1257,6 +1273,7 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
     _check_delegation_tool()
     scopes = [str(s) for s in (scopes or [user_id]) if s]
     write_scope = str(write_scope or user_id)
+    write_scopes = [str(s) for s in (write_scopes or scopes) if s]
 
     # The answer cache. A question that has already been answered in this
     # room, by this person, does not need answering again.
@@ -1446,7 +1463,8 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
         CACHES.put("answer", cache_key, dict(result))
 
     # Learn from this exchange in the background, so it never delays the reply.
-    _schedule_memory_update(user_id, user_message, result["answer"], scopes=scopes,
+    _schedule_memory_update(user_id, user_message, result["answer"],
+                             scopes=write_scopes,
                              person_name=(speaker or {}).get("plain")
                              or (speaker or {}).get("name"))
 

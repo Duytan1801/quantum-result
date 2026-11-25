@@ -306,6 +306,71 @@ def _strip_sycophancy(text: str) -> str:
     return stripped
 
 
+# The acknowledgement opener.
+#
+# "Mình hiểu rồi, e mệt quá vì hôm nay học nhiều quá." - the reply spends
+# its first clause on telling the person that it heard them, and starts
+# with nothing. One of those is a tic; every reply starting that way is
+# the sound of a bot.
+#
+# The prompt asks for this not to happen. The prompt is a request, so
+# this is the safety net: the opener is cut off when what follows is a
+# proper clause. A reply that is *only* an acknowledgement is left
+# alone - there is nothing else in it to keep.
+_ACKNOWLEDGEMENT_OPENERS = (
+    # English
+    "absolutely", "certainly", "sure", "of course", "got it", "i see",
+    "understood", "noted", "okay", "ok", "right",
+    # Vietnamese
+    "chắc chắn rồi", "chắc chắn", "được rồi", "mình hiểu rồi",
+    "mình hiểu", "ừ", "ok", "oke", "ờ",
+)
+
+
+def acknowledgement_opener(text: str) -> str:
+    """The acknowledgement word this reply opens with, if it opens with one.
+
+    Returns the phrase (so the caller can name it in a repair request),
+    or an empty string when the reply starts with the actual content.
+    """
+    if not text:
+        return ""
+    stripped = text.lstrip()
+    for phrase in _ACKNOWLEDGEMENT_OPENERS:
+        pattern = re.compile(
+            r"^" + re.escape(phrase) + r"(?![^\s,.!?:;])",
+            re.IGNORECASE,
+        )
+        if pattern.match(stripped):
+            return phrase
+    return ""
+
+
+def _strip_acknowledgement_opener(text: str) -> str:
+    """Take the acknowledgement off the front of a reply.
+
+    Only when the opener is followed by a comma and then a real clause -
+    "Mình hiểu rồi, e mệt quá" becomes "e mệt quá", which is what the
+    person meant. When the opener is followed by a full stop, cutting it
+    would leave a sentence with no subject, so it is left alone and the
+    prompt is what has to stop it.
+    """
+    stripped = text.lstrip()
+    for _ in range(3):
+        opener = acknowledgement_opener(stripped)
+        if not opener:
+            break
+        pattern = re.compile(
+            r"^" + re.escape(opener) + r"\s*,\s*",
+            re.IGNORECASE,
+        )
+        new = pattern.sub("", stripped, count=1)
+        if not new.strip() or new == stripped:
+            break
+        stripped = new
+    return stripped
+
+
 def _strip_leading_status(text: str) -> str:
     """Remove a "let me look that up" line when there is a real answer after it.
 
@@ -479,6 +544,7 @@ def sanitize_reply(text: str) -> str:
     cleaned = _strip_line_echoes(cleaned)
     cleaned = _strip_frames(cleaned)
     cleaned = _strip_sycophancy(cleaned)
+    cleaned = _strip_acknowledgement_opener(cleaned)
     cleaned = _strip_leading_status(cleaned)
     cleaned = _strip_closers(cleaned)
 

@@ -156,6 +156,51 @@ async def db_scope_has_rows(scope: str) -> bool:
     return await asyncio.to_thread(_fetch)
 
 
+async def db_all_scopes() -> list[str]:
+    """Every scope the bot has ever written to.
+
+    A detached room reads the whole picture, so it needs to know every key
+    the memory is stored under: one per person, one per room. The tables
+    are read one column at a time and paged through, so this costs a few
+    small queries rather than a scan of the conversation itself.
+    """
+    scopes: set[str] = set()
+
+    for table in ("conversation_history", "memories", "user_facts"):
+        def _fetch(table=table):
+            found: set[str] = set()
+            last = 0
+            while True:
+                resp = (
+                    supabase.table(table)
+                    .select("id,user_id")
+                    .gt("id", last)
+                    .order("id")
+                    .limit(1000)
+                    .execute()
+                )
+                rows = resp.data or []
+                if not rows:
+                    break
+                for row in rows:
+                    value = row.get("user_id")
+                    if value:
+                        found.add(str(value))
+                last = rows[-1]["id"]
+                if len(rows) < 1000:
+                    break
+            return found
+
+        try:
+            scopes |= await asyncio.to_thread(_fetch)
+        except Exception:
+            # A table without an id column, or one that is not there yet,
+            # simply does not contribute scopes.
+            continue
+
+    return sorted(scopes)
+
+
 async def db_get_user_facts_multi(user_ids) -> dict:
     """All remembered facts across several scopes, as key -> value."""
     ids = [str(u) for u in (user_ids or []) if u is not None]

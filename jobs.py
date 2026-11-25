@@ -227,19 +227,31 @@ async def _run_job(job_id: str, channel, user_id: str, topic: str, agent_name: s
         # Record the outcome in the user's conversation history, so the main
         # model knows the agent ran and what it found. Without this the bot
         # forgets its own report and contradicts it on the next question.
+        #
+        # A detached room writes only to itself: the report is part of what
+        # happened in there, and the person's own scope is read in every
+        # other room.
         scopes = []
-        if user_id:
-            scopes.append(user_id)
         if channel is not None:
             try:
+                from config import is_detached
                 from presence import channel_scope
-                from storage import db_scope_has_rows
 
                 scope = channel_scope(channel.id)
-                if await db_scope_has_rows(scope):
-                    scopes.append(scope)
+                if is_detached(channel.id):
+                    scopes = [scope]
+                else:
+                    if user_id:
+                        scopes.append(user_id)
+                    from storage import db_scope_has_rows
+
+                    if await db_scope_has_rows(scope):
+                        scopes.append(scope)
             except Exception:
-                pass
+                if user_id:
+                    scopes.append(user_id)
+        elif user_id:
+            scopes.append(user_id)
         await record_job_result(user_id, topic, agent_name, summary, files,
                                 scopes=scopes)
 

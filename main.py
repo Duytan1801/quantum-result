@@ -30,6 +30,7 @@ from people import (
     roster_line,
 )
 from presence import ChannelTracker, WAIT_SECONDS, channel_scope, decide
+from scopes import scope_plan
 from sandbox import run_code_in_sandbox
 from storage import (
     db_delete_fact,
@@ -213,20 +214,17 @@ def _remember_bot_messages(channel_id: str, messages) -> None:
             ids.discard(message_id)
 
 
-def _scopes_for(channel, user_id) -> tuple[list, str, bool]:
-    """The context keys for one person in one channel.
+async def _scope_plan(channel_id, user_id, is_dm=False):
+    """Where this turn reads from, and where it writes to.
 
     In a room the conversation and the memory are shared, so the channel's
     scope is read as well as the person's own, and new rows are written to
     the channel's scope.
-    """
-    scopes = [str(user_id)]
-    scope = TRACKER.scope_for(getattr(channel, "id", None))
-    if not scope:
-        return scopes, str(user_id), False
-    scopes.append(scope)
-    return scopes, scope, True
 
+    A detached room - one that knows the whole picture but shares nothing
+    - reads every scope the bot has and writes only its own. See scopes.py.
+    """
+    return await scope_plan(channel_id, user_id, tracker=TRACKER, is_dm=is_dm)
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +273,7 @@ async def attach_images(target, files: list, caption: str = None):
 
 @bot.command(name="ask")
 async def ask(ctx, *, question: str):
-    scopes, write_scope, shared = _scopes_for(ctx.channel, ctx.author.id)
+    plan = await _scope_plan(ctx.channel.id, ctx.author.id)
     roster = await _channel_roster(str(ctx.channel.id), ctx.channel)
     async with ctx.typing():
         result = await get_nvidia_response_full(
@@ -283,9 +281,10 @@ async def ask(ctx, *, question: str):
             question,
             ctx.channel,
             attachments=ctx.message.attachments,
-            scopes=scopes,
-            write_scope=write_scope,
-            shared=shared,
+            scopes=plan.read,
+            write_scope=plan.primary,
+            write_scopes=plan.write,
+            shared=plan.shared,
             speaker=person_entry(ctx.author),
             roster=roster,
         )
@@ -362,22 +361,20 @@ async def cancel_job_cmd(ctx, job_id: str):
 
 @bot.command(name="remember")
 async def remember(ctx, key: str, *, value: str):
-    await db_set_fact(ctx.author.id, key, value)
     # In a room, everybody should know the fact - so it is stored against
-    # the channel as well as against the person who said it.
-    scope = TRACKER.scope_for(ctx.channel.id)
-    if scope:
+    # the channel as well as against the person who said it. In a detached
+    # room it is stored only against the room, because the person's own
+    # scope is read in every other room.
+    plan = await _scope_plan(ctx.channel.id, ctx.author.id)
+    for scope in plan.write:
         await db_set_fact(scope, key, value)
     await ctx.send(f"Remembered: {key} = {value}")
 
 
 @bot.command(name="recall")
 async def recall(ctx, key: str):
-    scopes = [str(ctx.author.id)]
-    scope = TRACKER.scope_for(ctx.channel.id)
-    if scope:
-        scopes.append(scope)
-    facts = await db_get_user_facts_multi(scopes)
+    plan = await _scope_plan(ctx.channel.id, ctx.author.id)
+    facts = await db_get_user_facts_multi(plan.read)
     val = facts.get(key)
     await ctx.send(f"{key}: {val}" if val else "I don't remember that.")
 
@@ -385,10 +382,11 @@ async def recall(ctx, key: str):
 @bot.command(name="forget")
 async def forget(ctx, key: str):
     """Forget a stored fact, and any long-term memory that mentions it."""
-    scopes = [str(ctx.author.id)]
-    scope = TRACKER.scope_for(ctx.channel.id)
-    if scope:
-        scopes.append(scope)
+    # The scopes this room writes to: in a room, the person and the room;
+    # in a detached room, only the room - so a thing said in there can be
+    # forgotten there and nowhere else.
+    plan = await _scope_plan(ctx.channel.id, ctx.author.id)
+    scopes = list(plan.write)
 
     for scope_key in scopes:
         await db_delete_fact(scope_key, key)
@@ -714,14 +712,15 @@ async def on_message(message):
                 return
 
             shared = TRACKER.is_shared(channel_id) if not is_dm else False
-            scopes = [str(message.author.id)]
-            write_scope = str(message.author.id)
-            if shared:
-                # A room: everybody's messages belong to the same thread, and the
-                # long-term memory is shared too.
-                scope = channel_scope(channel_id)
-                scopes.append(scope)
-                write_scope = scope
+            # Where this turn reads from, and where it writes to. In a
+            # room everybody's messages belong to the same thread, and the
+            # long-term memory is shared too. A detached room reads the
+            # whole picture and writes only itself.
+            plan = await _scope_plan(channel_id, message.author.id, is_dm=is_dm)
+            shared = plan.shared
+            scopes = plan.read
+            write_scope = plan.primary
+            if plan.shared and not is_dm:
                 SHARED_CHANNELS[channel_id] = True
                 TRACKER.mark_shared(channel_id)
 
@@ -733,6 +732,7 @@ async def on_message(message):
                     attachments=message.attachments,
                     scopes=scopes,
                     write_scope=write_scope,
+                    write_scopes=plan.write,
                     shared=shared,
                     speaker=speaker,
                     roster=roster,

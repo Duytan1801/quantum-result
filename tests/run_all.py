@@ -31,6 +31,7 @@ QUICK = [
     "test_cache.py",
     "test_handler.py",
     "test_addresses.py",
+    "test_detached.py",
 ]
 
 LIVE = [
@@ -39,6 +40,7 @@ LIVE = [
     "probe_tool_retry.py",
     "probe_personal_deep.py",
     "probe_natural.py",
+    "test_detached_store.py",
 ]
 
 
