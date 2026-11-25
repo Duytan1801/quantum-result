@@ -495,7 +495,7 @@ def turn_note() -> str:
 def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
                            speaker=None, roster=None, bot_name: str = "",
                            bot_aliases=(), voice_lines=(), kind: str = "",
-                           target: str = "") -> str:
+                           target: str = "", news=None) -> str:
     """The system prompt for saying something nobody asked for.
 
     The same person as everywhere else - the same identity, the same
@@ -512,6 +512,10 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
     the system contributes information of its own when it speaks first,
     the factuality risk is higher than in an ordinary reply - so it
     states no facts at all, and claims to have done nothing.
+
+    `news` is what the room's news channel has been given. It goes in
+    as knowledge rather than as a subject: the point is that Lain knows
+    what happened today, not that she is here to report it.
     """
     facts_text = ""
     if user_facts:
@@ -533,6 +537,34 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
             f"{target}.\n"
         )
 
+    # The news the room's other channel has been given. This is
+    # knowledge, not a subject. A person in a room has read some of
+    # today's news; that is most of what it takes to sound like somebody
+    # who is actually there. But the news is not the point of the
+    # message, and repeating the headline back to the room is worthless -
+    # they can read it.
+    news_text = ""
+    if news:
+        from newsfeed import brief
+
+        lines = []
+        for item in list(news)[:4]:
+            text = brief(item)
+            if text:
+                lines.append(f"- {text}")
+        news_text = (
+            "\nYou have read some of the news from another channel in this "
+            "server. You are not here to report it - they can read it "
+            "themselves, and reading the headline back at them is worth "
+            "nothing. It is here because you know what happened today, "
+            "the way a person in the room does.\n"
+            + "\n".join(lines)
+            + "\n- If you mention any of it, it has to be a thought or a "
+            "question that connects to the room, not a summary of the "
+            "headline. And never state a detail from it as a fact you "
+            "verified - you read it, you did not check it.\n"
+        )
+
     return (
         "You are about to say something in a chat room that nobody asked you "
         "for. You are a person in the room, not a service.\n"
@@ -544,6 +576,7 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
         + _quiet_note_cached()
         + voice_text
         + facts_text
+        + news_text
         + "\n"
         "How to say it:\n"
         "- One line. One sentence, maybe two short ones. Nothing more.\n"

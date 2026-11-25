@@ -32,6 +32,7 @@ QUICK = [
     "test_handler.py",
     "test_addresses.py",
     "test_detached.py",
+    "test_newsfeed.py",
 ]
 
 LIVE = [

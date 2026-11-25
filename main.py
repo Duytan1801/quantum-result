@@ -31,6 +31,7 @@ from people import (
 )
 from presence import ChannelTracker, WAIT_SECONDS, channel_scope, decide
 from scopes import scope_plan
+from config import (NEWS_CHANNEL_ID, NEWS_MAX_AGE_HOURS, is_detached)
 from sandbox import run_code_in_sandbox
 from storage import (
     db_delete_fact,
@@ -610,7 +611,11 @@ async def on_ready():
 
 
     async def _tick_once():
-        from proactive import gate, state_for, note_human, in_quiet_hours
+        """Look at every channel that has chat on, and decide about each.
+
+        Most of this ends in silence. That is the point of it.
+        """
+        from proactive import gate, speak_once, state_for, in_quiet_hours
 
         now = time.time()
 
@@ -619,18 +624,93 @@ async def on_ready():
         except Exception:
             channels = []
 
+        # The news the server's other channel has been given. This is
+        # what Lain knows about today - it changes what she can say,
+        # not what she is here to do.
+        news = await _read_news()
+
         for cid in channels:
             if str(cid) not in SHARED_CHANNELS:
                 continue
+            if is_detached(cid):
+                continue
             ok, why = gate(cid, now=now)
             if not ok:
-                continue
-            if in_quiet_hours(time.localtime(now)):
+                print(f"proactive: skipping {cid} - {why}")
                 continue
 
-            state = state_for(cid)
-            if not state.last_human:
-                state.last_human = now
+            channel = bot.get_channel(int(cid))
+            if channel is None:
+                continue
+
+            # Do not talk over a turn that is already happening.
+            if _channel_lock(cid).locked():
+                print(f"proactive: skipping {cid} - the bot is busy")
+                continue
+
+            try:
+                lines = await _recent_messages(channel, limit=12)
+                roster = await _channel_roster(cid, channel)
+                own_name = bot_canonical_name(bot.user)
+                own_aliases = tuple(n for n in bot_name_variants(bot.user)
+                                     if n.lower() != own_name.lower())
+
+                async with _channel_lock(cid):
+                    line = await speak_once(
+                        channel_id=cid,
+                        channel=channel,
+                        bot=bot,
+                        bot_name=own_name,
+                        bot_aliases=own_aliases,
+                        roster=roster,
+                        lines=lines,
+                        people=roster_line(roster),
+                        channel_name=getattr(channel, "name", cid),
+                        now=now,
+                        news=news,
+                    )
+                if line:
+                    LAST_BOT_REPLY[cid] = time.time()
+            except Exception as exc:
+                print(f"proactive: could not speak in {cid}: {exc}")
+
+    async def _read_news(limit: int = 8):
+        """The news digest posts from the server's news channel.
+
+        Read from the channel itself rather than from a feed API: the
+        digest bot already posts it there in a consistent format, so
+        this is a matter of recognising the format and pulling out the
+        headline and the explanation.
+
+        Only recent posts are taken. News that is three days old is not
+        what happened today, and somebody reading a remark about it
+        would know it.
+        """
+        from newsfeed import parse_news
+
+        channel = bot.get_channel(int(NEWS_CHANNEL_ID))
+        if channel is None:
+            print(f"news channel {NEWS_CHANNEL_ID} not found")
+            return []
+
+        cutoff = time.time() - NEWS_MAX_AGE_HOURS * 3600
+        items = []
+        try:
+            async for message in channel.history(limit=40):
+                if message.author.id == bot.user.id:
+                    continue
+                if message.created_at.timestamp() < cutoff:
+                    break
+                parsed = parse_news(message.content or "")
+                if parsed:
+                    parsed["posted_at"] = message.created_at.isoformat()
+                    parsed["source"] = message.source_url
+                    items.append(parsed)
+                if len(items) >= limit:
+                    break
+        except Exception as exc:
+            print(f"could not read the news channel: {exc}")
+        return items
 
     # Start the proactive tick. It runs in the background while the bot
     # stays responsive. If it is disabled, it simply does nothing.

@@ -316,6 +316,8 @@ Decide whether there is something here worth one line, right now.
 
 Most of the time there is not. A quiet room is usually just a quiet room, and a message nobody asked for is easy to ignore. Say QUIET unless one of the three kinds clearly fits what was actually said.
 
+If there is news in the context above, it is news the room may not have talked about. That is a reason to say something, not a reason to say something: the news has to connect to what the room is actually about, or to something one of them has been dealing with. Do not summarise the news back to them - they can read it. A thought or a question about it is worth saying; the headline is not.
+
 Never propose a fact, a number, a link, or anything you would have to look up. You are not going to use a tool for this, so do not suggest something that needs one.
 
 Answer on one line, in exactly this form:
@@ -364,7 +366,7 @@ async def _complete(model: str, messages, max_tokens: int = 200,
 
 
 async def decide_moment(*, bot_name: str, people: str, channel_name: str,
-                        lines, now: float) -> tuple[str, str]:
+                        lines, now: float, news=None) -> tuple[str, str]:
     """Does the bot have something it wants to say?
 
     The small model reads the room and answers with one of the three
@@ -372,7 +374,7 @@ async def decide_moment(*, bot_name: str, people: str, channel_name: str,
     reason to write one.
     """
     context = _context_text(channel_name=channel_name, people=people,
-                             lines=lines, now=now)
+                             lines=lines, now=now, news=news)
     prompt = MOMENT_PROMPT.format(bot_name=bot_name, people=people,
                                    context=context)
     for model in MOMENT_MODELS:
@@ -389,7 +391,8 @@ async def decide_moment(*, bot_name: str, people: str, channel_name: str,
     return "", ""
 
 
-def _context_text(*, channel_name: str, people: str, lines, now: float) -> str:
+def _context_text(*, channel_name: str, people: str, lines, now: float,
+                  news=None) -> str:
     """The structured context the moment-decision reads."""
     recent = list(lines or [])[-8:]
     body = [
@@ -402,6 +405,23 @@ def _context_text(*, channel_name: str, people: str, lines, now: float) -> str:
     body.append("What has been said, oldest first:")
     for who, said in recent:
         body.append(f"- {who}: {said[:180]}")
+
+    # The news the room's other channel has been given. This is not a
+    # subject on its own - it is what Lain knows about today. A person
+    # in a room has read some of this; the question is whether it has
+    # anything to do with what the room is talking about.
+    if news:
+        from newsfeed import brief
+
+        body.append("")
+        body.append("News from another channel in this server today "
+                    "(you have read this; the room has not necessarily "
+                    "discussed it):")
+        for item in news[:4]:
+            text = brief(item)
+            if text:
+                body.append(f"- {text}")
+
     return "\n".join(body)
 
 
@@ -412,7 +432,7 @@ def _context_text(*, channel_name: str, people: str, lines, now: float) -> str:
 async def write_line(*, kind: str, target: str, bot_name: str,
                      bot_aliases=(), roster=None, speaker=None,
                      user_facts: dict | None = None, voice_lines=(),
-                     history=()) -> str:
+                     history=(), news=None) -> str:
     """The sentence itself, in the room's voice."""
     from prompts import build_proactive_prompt
 
@@ -425,6 +445,7 @@ async def write_line(*, kind: str, target: str, bot_name: str,
         voice_lines=voice_lines,
         kind=kind,
         target=target,
+        news=news,
     )
     messages = [{"role": "system", "content": system}]
     messages.extend(list(history or [])[-12:])
@@ -528,7 +549,7 @@ def clean_line(text: str) -> str:
 async def speak_once(*, channel_id: str, channel, bot, bot_name: str,
                      bot_aliases=(), roster=None, lines=(),
                      people: str = "", channel_name: str = "",
-                     now: float | None = None) -> str:
+                     now: float | None = None, news=None) -> str:
     """Try to say one unprompted thing in this channel.
 
     Returns the message that was sent, or "" if nothing was. Every step
@@ -542,6 +563,7 @@ async def speak_once(*, channel_id: str, channel, bot, bot_name: str,
         channel_name=channel_name or f"channel {channel_id}",
         lines=lines,
         now=now,
+        news=news,
     )
     if not kind:
         print(f"proactive: staying quiet in {channel_id} - nothing worth saying")
@@ -558,6 +580,7 @@ async def speak_once(*, channel_id: str, channel, bot, bot_name: str,
         bot_aliases=bot_aliases,
         roster=roster,
         voice_lines=voice_lines,
+        news=news,
     )
     if not text:
         print(f"proactive: no line came back in {channel_id}")

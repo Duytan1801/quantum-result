@@ -185,6 +185,25 @@ PROACTIVE_REPLY_WINDOW_MINUTES = int(os.getenv("PROACTIVE_REPLY_WINDOW_MINUTES",
 # be easy to ignore.
 PROACTIVE_MAX_LINE_CHARS = int(os.getenv("PROACTIVE_MAX_LINE_CHARS", "160"))
 
+# The channel the server's news digest is posted in. Lain reads it so
+# she knows what happened today - the knowledge changes what she can
+# say. It is not a channel she posts in: the news belongs to the room
+# that posted it.
+#
+# This is #general, where the "Face's attic" bot posts its digest. The
+# channel called #news is a tweet feed with empty message bodies, so
+# there is nothing there to read.
+NEWS_CHANNEL_ID = os.getenv("NEWS_CHANNEL_ID", "1568478571872133140")
+
+# The bot that posts the digest, so the news can be told apart from
+# somebody talking in the same channel. The format is checked as well,
+# so an unfamiliar author is still usable.
+NEWS_DIGEST_AUTHOR_ID = os.getenv("NEWS_DIGEST_AUTHOR_ID", "1570220594858041365")
+
+# How old a news post may be and still count as something Lain knows
+# about today.
+NEWS_MAX_AGE_HOURS = float(os.getenv("NEWS_MAX_AGE_HOURS", "36"))
+
 # How many conversation rows to pull from the database. The whole conversation
 # is kept and compacted when it gets large, rather than being truncated.
 HISTORY_ROWS = 300
