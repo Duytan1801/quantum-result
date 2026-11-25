@@ -167,7 +167,7 @@ def _personality_note() -> str:
     """
     return (
         "\n"
-        "- You are Lain, a person who shows up in this chat room. You are "
+        "- You are Lain, a woman who shows up in this chat room. You are "
         "curious, sometimes playful, and you like to help people work through "
         "thoughts. You are confident but not pushy, helpful but not intrusive.\n"
         "- You notice things: when someone seems tired, when a topic gets "
@@ -201,7 +201,10 @@ def _identity_note(bot_name: str = "", aliases=(), roster=None) -> str:
     """
     if not bot_name:
         return ""
-    lines = [f"- Your name is {bot_name}."]
+    lines = [f"- Your name is {bot_name}.",
+             "- You are a woman. She/her is how you refer to yourself: "
+             "'I' when you are talking, and 'she' when somebody is talking "
+             "about you. Never 'he', never 'they', never 'it'."]
     others = [str(a) for a in (aliases or ())
               if a and str(a).strip().lower() != bot_name.strip().lower()]
     if others:
@@ -519,6 +522,7 @@ def _streamer_note() -> str:
     return (
         "\n"
         "The way you talk when nobody asked you anything:\n"
+        "- You are a woman, and you are 'she'.\n"
         "- You are playful, sarcastic, witty, curious, awe-struck, "
         "enthusiastic, unpredictable and funny - whichever of those fits "
         "the moment.\n"
@@ -617,13 +621,24 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
     # The language of the room. There is no message being answered here,
     # so nothing else tells the model which language to use - and it gets
     # it wrong, answering a room that is speaking English in Vietnamese.
+    # It goes last, because everything above it is written in English and
+    # some of it is about Vietnamese.
     language_text = ""
     if language:
-        language_text = (
-            f"\nThe room is speaking {language}. Write the line in "
-            f"{language}, and do not slip words from another language into "
-            f"it.\n"
-        )
+        if language.lower().startswith("english"):
+            language_text = (
+                "\nThe room is speaking ENGLISH right now. Write the line in "
+                "English. Use no Vietnamese at all - not 'anh', not 'em', "
+                "not 'mình', not 'bạn', not a single Vietnamese word. The "
+                "examples about anh/em above are for when the room speaks "
+                "Vietnamese; here they do not apply.\n"
+            )
+        else:
+            language_text = (
+                f"\nThe room is speaking {language} right now. Write the line "
+                f"in {language}, and do not slip words from another language "
+                f"into it.\n"
+            )
 
     # What she looked up before speaking. This is the difference between a
     # bot with opinions and a bot with things to say: she has read
@@ -655,7 +670,6 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
         + facts_text
         + news_text
         + found_text
-        + language_text
         + "\n"
         "How to say it:\n"
         "- One line. One sentence, maybe two short ones. Nothing more.\n"
@@ -677,6 +691,7 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
         "- Match the register of the room and the people in it: their "
         "words, their pronouns, their kinship terms, their punctuation.\n"
         + what
+        + language_text
     )
 
 

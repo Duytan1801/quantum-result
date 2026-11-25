@@ -508,12 +508,28 @@ async def write_line(*, kind: str, target: str, bot_name: str,
     )
     messages = [{"role": "system", "content": system}]
     messages.extend(list(history or [])[-12:])
+
+    # The language goes in the last message as well as the system prompt.
+    # The system prompt for this room talks about anh/em and mình, and a
+    # model asked to write a line in a room that is speaking English
+    # answers in Vietnamese anyway - the instruction has to be the last
+    # thing it reads, right before it writes.
+    ask = ("Say it now. One line, the way you would say it to them, "
+           "and nothing else - no explanation, no quotation marks "
+           "around it, no mention of what you are doing, and no "
+           "mention of having looked anything up.")
+    if language:
+        if language.lower().startswith("english"):
+            ask += (" The room is speaking English, so write it in English. "
+                    "No Vietnamese words at all - not 'anh', not 'em', not "
+                    "'mình'. Address them by their name or as 'you'.")
+        else:
+            ask += (f" The room is speaking {language}, so write it in "
+                    f"{language}.")
+
     messages.append({
         "role": "user",
-        "content": ("Say it now. One line, the way you would say it to them, "
-                    "and nothing else - no explanation, no quotation marks "
-                    "around it, no mention of what you are doing, and no "
-                    "mention of having looked anything up."),
+        "content": ask,
     })
 
     from config import provider_chain
