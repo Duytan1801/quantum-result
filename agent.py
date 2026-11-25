@@ -1315,7 +1315,7 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
                                    write_scope=None, shared: bool = False,
                                    speaker=None, roster=None, shape: str = "",
                                    bot_name: str = "", bot_aliases=(),
-                                   write_scopes=None):
+                                   write_scopes=None, news=None):
     """Answer a message, persist the exchange, and return the answer plus metadata.
 
     `scopes` are the context keys to read from. A channel with more than one
@@ -1343,6 +1343,11 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
 
     `bot_name` and `bot_aliases` are the bot's own names, so it knows what
     it is called.
+
+    `news` is what the room's news channel has been given today. It goes
+    into the prompt as knowledge, and it answers a question about the news
+    better than a web search does - so a question the feed covers is not
+    forced through a lookup.
     """
     _check_delegation_tool()
     scopes = [str(s) for s in (scopes or [user_id]) if s]
@@ -1387,7 +1392,8 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
          "content": build_system_prompt(user_facts, kaggle_hint, shared=shared,
                                         speaker=speaker, roster=roster,
                                         bot_name=bot_name,
-                                        bot_aliases=bot_aliases)}
+                                        bot_aliases=bot_aliases,
+                                        news=news)}
     ]
     messages.extend(history_to_messages(history))
 
@@ -1455,7 +1461,20 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
     # If the question depends on the world as it is now, remind the model to
     # source and verify before answering. Cheap to add, and it stops the model
     # confidently answering from stale training data.
-    if needs_fresh_data(user_message):
+    #
+    # Unless the room's own news feed already answers it. The feed is
+    # today's news, about the things this room reads, and it is fresher
+    # than anything a search would turn up in the next ten seconds. So a
+    # question about the news is answered from what Lain has read, and
+    # the lookup is skipped.
+    try:
+        from newsfeed import is_news_question
+
+        digest_covers = bool(news) and is_news_question(user_message)
+    except Exception:
+        digest_covers = False
+
+    if needs_fresh_data(user_message) and not digest_covers:
         messages.insert(1, {"role": "system", "content": FRESHNESS_REMINDER})
 
     # Pull in anything worth remembering from earlier conversations.
@@ -1514,7 +1533,8 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
     # classifier has already said whether the message is a real job ("deep"),
     # so this is a model's opinion and not a list of words; the freshness
     # check is the older one, kept for the turns that never reach a room.
-    require_tool = shape == "deep" or needs_fresh_data(user_message)
+    require_tool = (shape == "deep" or needs_fresh_data(user_message)) \
+        and not digest_covers
 
     try:
         result = await run_agent_loop(

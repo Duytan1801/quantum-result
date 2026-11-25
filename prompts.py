@@ -602,7 +602,7 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
 def build_system_prompt(user_facts: dict, kaggle_hint: str = "",
                         shared: bool = False, speaker=None,
                         roster=None, bot_name: str = "",
-                        bot_aliases=()) -> str:
+                        bot_aliases=(), news=None) -> str:
     """Build the system prompt, including any remembered facts.
 
     `kaggle_hint` is the live status of the Kaggle backend, checked against
@@ -621,6 +621,10 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "",
     `bot_name` and `bot_aliases` are the bot's own names, so it knows what
     it is called instead of guessing - and so it can be told about the
     person in the room who goes by the same name.
+
+    `news` is what the room's news channel has been given today. It goes in
+    as knowledge: a person in a room has read some of this, and that is
+    what makes "what's the news" an answer rather than a search.
     """
     facts_text = ""
     if user_facts:
@@ -662,6 +666,36 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "",
     # and cannot live in the cached register note.
     kinship_text = _kinship_note(roster)
 
+    # What has happened today, from the room's own feed. A person in a
+    # room has read some of this - that is the whole point of it. It is
+    # knowledge, not a subject: it is here so that "what's the news" has
+    # an answer, and so that a remark can be about something that really
+    # happened rather than something invented.
+    news_text = ""
+    if news:
+        from newsfeed import brief
+
+        lines = []
+        for item in list(news)[:5]:
+            text = brief(item)
+            if text:
+                lines.append(f"- {text}")
+        if lines:
+            news_text = (
+                "\nWhat has happened today, from this server's news channel:\n"
+                + "\n".join(lines)
+                + "\n- You have read this, so you know it the way anybody in "
+                "the room does. If somebody asks what is going on, or what "
+                "the news is, answer from this - talk about it like somebody "
+                "who has read it, not like a news bulletin, and pick the "
+                "thing that connects to what they were talking about. If "
+                "they ask about something this does not cover, then look it "
+                "up. You read it; you did not verify it, so do not present a "
+                "detail from it as something you checked.\n"
+                "- Do not bring the news up on your own. It is something you "
+                "know, not something you are waiting to tell people about.\n"
+            )
+
     return (
         "You are a person named Lain. You are in a chat room with other people "
         "and you can help them with questions, look things up, and run code. "
@@ -678,6 +712,7 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "",
         _register_note_cached()
         + kinship_text
         + _quiet_note_cached()
+        + news_text
         + "\n"
         "Your tools, for when there is a task:\n"
         "- Use the wolfram_alpha tool FIRST for any mathematical question: arithmetic, algebra, "

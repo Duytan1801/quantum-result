@@ -96,6 +96,58 @@ ROOM_VERSION: dict[str, int] = {}
 # nothing else comes.
 WAITING: dict[str, asyncio.Task] = {}
 
+# The room's news, and when it was last read. The feed changes a few times
+# a day, so it is read once and kept for a while - both the proactive tick
+# and the replies use the same copy.
+NEWS_CACHE: tuple[float, list] | None = None
+NEWS_CACHE_TTL = 300
+
+
+async def _read_news(limit: int = 8, *, force: bool = False) -> list:
+    """The news digest posts from the server's news channel.
+
+    Read from the channel itself rather than from a feed API: the digest
+    bot already posts it there in a consistent format, so this is a matter
+    of recognising the format and pulling out the headline and the
+    explanation.
+
+    Only recent posts are taken. News that is three days old is not what
+    happened today, and somebody reading a remark about it would know it.
+    """
+    global NEWS_CACHE
+
+    now = time.time()
+    if not force and NEWS_CACHE and now - NEWS_CACHE[0] < NEWS_CACHE_TTL:
+        return NEWS_CACHE[1]
+
+    from newsfeed import parse_news
+
+    channel = bot.get_channel(int(NEWS_CHANNEL_ID))
+    if channel is None:
+        print(f"news channel {NEWS_CHANNEL_ID} not found")
+        return []
+
+    cutoff = now - NEWS_MAX_AGE_HOURS * 3600
+    items = []
+    try:
+        async for message in channel.history(limit=40):
+            if message.author.id == bot.user.id:
+                continue
+            if message.created_at.timestamp() < cutoff:
+                break
+            parsed = parse_news(message.content or "")
+            if parsed:
+                parsed["posted_at"] = message.created_at.isoformat()
+                parsed["source"] = message.source_url
+                items.append(parsed)
+            if len(items) >= limit:
+                break
+    except Exception as exc:
+        print(f"could not read the news channel: {exc}")
+
+    NEWS_CACHE = (now, items)
+    return items
+
 
 async def _channel_roster(channel_id: str, channel=None, force: bool = False) -> list:
     """The people in this channel, with the names they go by."""
@@ -674,44 +726,6 @@ async def on_ready():
             except Exception as exc:
                 print(f"proactive: could not speak in {cid}: {exc}")
 
-    async def _read_news(limit: int = 8):
-        """The news digest posts from the server's news channel.
-
-        Read from the channel itself rather than from a feed API: the
-        digest bot already posts it there in a consistent format, so
-        this is a matter of recognising the format and pulling out the
-        headline and the explanation.
-
-        Only recent posts are taken. News that is three days old is not
-        what happened today, and somebody reading a remark about it
-        would know it.
-        """
-        from newsfeed import parse_news
-
-        channel = bot.get_channel(int(NEWS_CHANNEL_ID))
-        if channel is None:
-            print(f"news channel {NEWS_CHANNEL_ID} not found")
-            return []
-
-        cutoff = time.time() - NEWS_MAX_AGE_HOURS * 3600
-        items = []
-        try:
-            async for message in channel.history(limit=40):
-                if message.author.id == bot.user.id:
-                    continue
-                if message.created_at.timestamp() < cutoff:
-                    break
-                parsed = parse_news(message.content or "")
-                if parsed:
-                    parsed["posted_at"] = message.created_at.isoformat()
-                    parsed["source"] = message.source_url
-                    items.append(parsed)
-                if len(items) >= limit:
-                    break
-        except Exception as exc:
-            print(f"could not read the news channel: {exc}")
-        return items
-
     # Start the proactive tick. It runs in the background while the bot
     # stays responsive. If it is disabled, it simply does nothing.
     from proactive import PROACTIVE_ENABLED
@@ -865,6 +879,7 @@ async def on_message(message):
                     shape=decision.shape,
                     bot_name=own_name,
                     bot_aliases=own_aliases,
+                    news=await _read_news(),
                 )
             sent = await send_long(message, result["answer"], footer=result["footer"])
             LAST_BOT_REPLY[channel_id] = time.time()

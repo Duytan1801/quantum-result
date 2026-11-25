@@ -141,6 +141,28 @@ def is_digest(text: str) -> bool:
     return parse_news(text) is not None
 
 
+# A question about the news, in the two languages the room uses. The
+# point of this is not to catch every question that mentions the news -
+# it is to know when the room's own feed is a better answer than a web
+# search, because it is fresher and about the things this room reads.
+_NEWS_QUESTION_EN = re.compile(
+    r"(news|headlines?|what'?s going on|what'?s happening|"
+    r"anything new|anything happening|what is new|what's new)",
+    re.IGNORECASE)
+_NEWS_QUESTION_VI = re.compile(
+    r"(tin tức|tin mới|có gì mới|có gì hot|hôm nay có gì|"
+    r"có gì hay|update gì|có tin gì)",
+    re.IGNORECASE)
+
+
+def is_news_question(text: str) -> bool:
+    """Is this a question about what is going on?"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_NEWS_QUESTION_EN.search(t) or _NEWS_QUESTION_VI.search(t))
+
+
 def brief(item: dict, *, body_chars: int = 200) -> str:
     """One digest post, as a short piece of text for a prompt.
 

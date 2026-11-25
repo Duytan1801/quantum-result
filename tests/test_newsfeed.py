@@ -139,6 +139,34 @@ context = proactive._context_text(channel_name="model", people="Jade",
                                   now=0, news=[ai_item])
 check_true("the news is in the moment context", "Tidal removes" in context)
 
+# The reply path: the news is knowledge for an ordinary answer too.
+reply_prompt = prompts.build_system_prompt({}, "", shared=False,
+                                           bot_name="Lain", news=[ai_item])
+check_true("the news is in the reply prompt", "Tidal removes" in reply_prompt)
+check_true("the reply prompt says not to bring it up",
+           "Do not bring the news up on your own" in reply_prompt)
+check_true("the reply prompt says the feed beats a search",
+           "answer from this" in reply_prompt)
+
+from newsfeed import is_news_question  # noqa: E402
+
+check_true("a news question is recognised", is_news_question("Hows the news"))
+check_true("a Vietnamese news question is recognised",
+           is_news_question("có tin gì mới hôm nay"))
+check_true("a normal question is not a news question",
+           not is_news_question("what time is it"))
+
+# A question the feed covers must not be forced through a web search.
+import inspect  # noqa: E402
+from agent import get_nvidia_response_full  # noqa: E402
+
+sig = inspect.signature(get_nvidia_response_full)
+check_true("the reply takes the news", "news" in sig.parameters)
+
+src = inspect.getsource(get_nvidia_response_full)
+check_true("the freshness check lets the feed answer",
+           "and not digest_covers" in src)
+
 print()
 print("=" * 70)
 print(f"{PASSED} passed, {len(FAILED)} failed")
