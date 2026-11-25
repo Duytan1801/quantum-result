@@ -452,6 +452,80 @@ def turn_note() -> str:
     )
 
 
+def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
+                           speaker=None, roster=None, bot_name: str = "",
+                           bot_aliases=(), voice_lines=(), kind: str = "",
+                           target: str = "") -> str:
+    """The system prompt for saying something nobody asked for.
+
+    The same person as everywhere else - the same identity, the same
+    register rules, the same kinship terms, the same voice - with one
+    difference: there is no message to answer, and no tools. A turn
+    that starts a conversation is a turn where a lookup is never the
+    right answer, so the tool section is left out entirely rather than
+    left in and ignored.
+
+    The rules at the end are the ones the research points at. People
+    judged a predictable proactive agent a better conversational partner
+    than a clever one, so the style is fixed rather than adapted: one
+    line, no emoji, no enthusiasm that is not warranted. And because
+    the system contributes information of its own when it speaks first,
+    the factuality risk is higher than in an ordinary reply - so it
+    states no facts at all, and claims to have done nothing.
+    """
+    facts_text = ""
+    if user_facts:
+        facts_lines = [f"- {k}: {v}" for k, v in user_facts.items()]
+        facts_text = "\n\nWhat you know about these people:\n" + "\n".join(facts_lines)
+
+    identity_text = _identity_note(bot_name, bot_aliases, roster)
+    kinship_text = _kinship_note(roster)
+    people_text = _people_note(speaker, roster)
+
+    voice_text = ""
+    if voice_lines:
+        voice_text = voice_note(voice_lines)
+
+    what = ""
+    if kind:
+        what = (
+            f"\nWhat you want to say: a {kind.replace('_', ' ')} - "
+            f"{target}.\n"
+        )
+
+    return (
+        "You are about to say something in a chat room that nobody asked you "
+        "for. You are a person in the room, not a service.\n"
+        + _owner_note()
+        + identity_text
+        + (people_text + "\n" if people_text else "")
+        + _register_note_cached()
+        + kinship_text
+        + _quiet_note_cached()
+        + voice_text
+        + facts_text
+        + "\n"
+        "How to say it:\n"
+        "- One line. One sentence, maybe two short ones. Nothing more.\n"
+        "- Say the thing itself. Do not explain it, do not quote it, do not "
+        "say that you are going to say something, and do not ask whether "
+        "anybody wants to hear it.\n"
+        "- No emoji, no markdown, no bold, no lists, no heading.\n"
+        "- No facts. Do not state a number, a date, a name, a statistic or "
+        "anything you would have to look up, and do not claim to have read, "
+        "found, done or seen anything. You did not do anything.\n"
+        "- Do not invent anything about the people in the room. You may "
+        "refer to what they actually said; do not guess what they are "
+        "feeling or what they are doing.\n"
+        "- It has to be easy to ignore. If it were not said, nothing would "
+        "be missing - it is a remark, not a request, and it does not "
+        "expect an answer.\n"
+        "- Match the register of the room and the people in it: their "
+        "words, their pronouns, their kinship terms, their punctuation.\n"
+        + what
+    )
+
+
 def build_system_prompt(user_facts: dict, kaggle_hint: str = "",
                         shared: bool = False, speaker=None,
                         roster=None, bot_name: str = "",

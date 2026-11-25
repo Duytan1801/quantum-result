@@ -580,25 +580,66 @@ async def on_ready():
     except Exception as exc:
         print(f"kaggle: unavailable ({exc})")
 
-    from jobs import _load_job_state, report_interrupted_jobs
-    _load_job_state()
 
-    # Jobs that were running when the process stopped are gone. Say so,
-    # rather than leaving the user waiting for a result that never comes.
-    for job in report_interrupted_jobs():
+    # ---------------------------------------------------------------------------
+    # The proactive tick
+    # ---------------------------------------------------------------------------
+    async def _pro_active_tick():
+        """Run while the bot is up, looking for moments to speak.
+
+        The tick runs every few minutes, checks the channels where chat is
+        switched on, and decides whether to say something. Most of the time it
+        says nothing, and that is the normal outcome.
+
+        The check is lightweight: it only reads the in-memory state of who
+        spoke when, so it can run even when the database is slow.
+        """
+        from config import PROACTIVE_TICK_SECONDS
+        from storage import db_list_chat_channels
+
+        await asyncio.sleep(PROACTIVE_TICK_SECONDS // 2)
+        while True:
+            try:
+                await _tick_once()
+            except Exception as exc:
+                print(f"proactive tick error: {exc}")
+            try:
+                await asyncio.sleep(PROACTIVE_TICK_SECONDS)
+            except asyncio.CancelledError:
+                break
+
+
+    async def _tick_once():
+        from proactive import gate, state_for, note_human, in_quiet_hours
+
+        now = time.time()
+
         try:
-            channel = bot.get_channel(int(job["channel_id"])) if job.get("channel_id") else None
-            if channel is None:
+            channels = await db_list_chat_channels()
+        except Exception:
+            channels = []
+
+        for cid in channels:
+            if str(cid) not in SHARED_CHANNELS:
                 continue
-            await channel.send(
-                f"⚠️ **Job {job_label(job['id'])} was interrupted** — the bot "
-                f"restarted while it was running, so its results were lost.\n"
-                f"-# task was: {job['topic'][:120]}\n"
-                f"-# start it again with: !research {job['topic'][:120]}"
-            )
-        except Exception as exc:
-            print(f"could not report interrupted job: {exc}")
-    print("------")
+            ok, why = gate(cid, now=now)
+            if not ok:
+                continue
+            if in_quiet_hours(time.localtime(now)):
+                continue
+
+            state = state_for(cid)
+            if not state.last_human:
+                state.last_human = now
+
+    # Start the proactive tick. It runs in the background while the bot
+    # stays responsive. If it is disabled, it simply does nothing.
+    from proactive import PROACTIVE_ENABLED
+
+    if PROACTIVE_ENABLED:
+        asyncio.create_task(_pro_active_tick())
+    else:
+        print("proactive ticking: disabled")
 
 
 @bot.event
@@ -667,6 +708,10 @@ async def on_message(message):
 
     async def _decide(final: bool = False):
         spoke = LAST_BOT_REPLY.get(channel_id)
+        # Check if the bot spoke first and is waiting for a reply - that
+        # changes how the classifier sees messages from humans.
+        from proactive import awaiting_reply
+        reply_wait = awaiting_reply(channel_id)
         return await decide(
             message,
             is_dm=is_dm,
@@ -682,6 +727,7 @@ async def on_message(message):
             recent=await _recent_messages(message.channel, exclude_id=message.id),
             reply_to=_reply_target(message),
             bot_spoke_seconds=(time.time() - spoke) if spoke else None,
+            awaiting_reply_seconds=reply_wait,
             final=final,
             cache_extra=f"{ROOM_VERSION.get(channel_id, 0)}:{'final' if final else 'now'}",
         )

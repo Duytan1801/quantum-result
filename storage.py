@@ -45,13 +45,38 @@ async def db_set_chat_mode(channel_id: str, enabled: bool):
     await asyncio.to_thread(_upsert)
 
 
+async def db_list_chat_channels() -> list[str]:
+    """The channels with chat mode switched on.
+
+    The proactive tick looks at these: a channel with chat mode off is a
+    channel where the bot stays quiet, and that is true whether or not
+    anybody is talking to it.
+    """
+    def _fetch():
+        try:
+            resp = (
+                supabase.table("chat_mode")
+                .select("channel_id")
+                .eq("enabled", True)
+                .execute()
+            )
+        except Exception as e:
+            err = str(e).lower()
+            if "42703" in err or "column" in err or "404" in err or "table" in err or "pgrst205" in err:
+                return []
+            raise
+        return [str(r.get("channel_id")) for r in (resp.data or [])
+                if r.get("channel_id")]
+    return await asyncio.to_thread(_fetch)
+
+
 async def db_get_history(user_id, limit=HISTORY_ROWS):
     """Fetch the most recent conversation rows for a user, oldest first."""
     def _fetch():
         try:
             resp = (
                 supabase.table("conversation_history")
-                .select("role, content, tool_calls, tool_call_id, name")
+                .select("role, content, tool_calls, tool_call_id, name, created_at")
                 .eq("user_id", str(user_id))
                 .order("created_at", desc=True)
                 .limit(limit)
@@ -61,7 +86,7 @@ async def db_get_history(user_id, limit=HISTORY_ROWS):
             if "42703" in str(e) or "column" in str(e).lower():
                 resp = (
                     supabase.table("conversation_history")
-                    .select("role, content")
+                    .select("role, content, created_at")
                     .eq("user_id", str(user_id))
                     .order("created_at", desc=True)
                     .limit(limit)

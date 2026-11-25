@@ -268,6 +268,7 @@ def _classifier_prompt(text: str, *, author_name: str, roster_line: str,
                        bot_name: str, chat_on: bool,
                        recent=(), reply_to: str = "",
                        bot_spoke_seconds: float | None = None,
+                       awaiting_reply_seconds: float | None = None,
                        final: bool = False, name_note: str = "",
                        bot_aliases: str = "") -> str:
     rule = _CLASSIFIER_RULE_CHAT if chat_on else _CLASSIFIER_RULE_QUIET
@@ -296,7 +297,14 @@ def _classifier_prompt(text: str, *, author_name: str, roster_line: str,
     # The cooldown only matters when the bot has just spoken. Told about a
     # reply from ten minutes ago it is just a nudge towards silence, and
     # the classifier is already too ready to stay quiet.
-    if bot_spoke_seconds is not None and bot_spoke_seconds < 180:
+    if awaiting_reply_seconds is not None:
+        cooldown = (
+            f"\nYou spoke first, {int(awaiting_reply_seconds)} seconds ago, "
+            "and nobody has answered you yet. So if this message reads like "
+            "an answer to what you said, it is for you. If it reads like "
+            "the people talking to each other, it is not.\n"
+        )
+    elif bot_spoke_seconds is not None and bot_spoke_seconds < 180:
         cooldown = "\n" + _CLASSIFIER_COOLDOWN_RULE.format(
             seconds=int(bot_spoke_seconds))
 
@@ -402,6 +410,7 @@ async def classify_reply(text: str, *, author_name: str, roster_line: str,
                           bot_name: str, chat_on: bool,
                           recent=(), reply_to: str = "",
                           bot_spoke_seconds: float | None = None,
+                          awaiting_reply_seconds: float | None = None,
                           final: bool = False, name_note: str = "",
                           bot_aliases: str = ""
                           ) -> tuple[bool, bool, str] | None:
@@ -445,6 +454,7 @@ async def classify_reply(text: str, *, author_name: str, roster_line: str,
         recent=recent,
         reply_to=reply_to,
         bot_spoke_seconds=bot_spoke_seconds,
+        awaiting_reply_seconds=awaiting_reply_seconds,
         final=final,
         name_note=name_note,
         bot_aliases=bot_aliases,
@@ -578,6 +588,7 @@ async def decide(message, *, is_dm: bool, shared: bool, bot_user_id=None,
                  roster=None, author_name: str = "", roster_line: str = "",
                  bot_name: str = "the bot", recent=(),
                  reply_to: str = "", bot_spoke_seconds: float | None = None,
+                 awaiting_reply_seconds: float | None = None,
                  final: bool = False, cache_extra: str = ""
                  ) -> Decision:
     """Should the bot answer this message?
@@ -645,6 +656,7 @@ async def decide(message, *, is_dm: bool, shared: bool, bot_user_id=None,
             recent=recent,
             reply_to=reply_to,
             bot_spoke_seconds=bot_spoke_seconds,
+            awaiting_reply_seconds=awaiting_reply_seconds,
             final=final,
             name_note=name_note,
             bot_aliases=aliases,

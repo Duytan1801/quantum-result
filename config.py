@@ -137,6 +137,54 @@ JOB_MAX_STEPS = 100          # tool-calling rounds for a background research job
 # about what you are about to believe.
 TOOL_SALT_AFTER = int(os.getenv("TOOL_SALT_AFTER", "3"))
 
+# --- Proactive talking ----------------------------------------------------
+#
+# The bot answers when it is spoken to. This is the other half: saying
+# something when nobody asked, once in a while, the way a person in a
+# room does - and, much more often, not saying anything.
+#
+# These numbers are the restraint. A proactive bot that talks too often
+# is a pest, and no amount of good writing fixes that, so the defaults
+# are conservative: hours between unprompted messages, a cap of a few a
+# day, and nothing at all in the small hours.
+#
+# The gap grows when nobody answers. A bot that keeps talking into a
+# silence is the worst kind of bot, so each ignored message makes the
+# next one wait twice as long, up to a day.
+
+PROACTIVE_ENABLED = (os.getenv("PROACTIVE_ENABLED", "1").strip().lower()
+                     not in ("0", "false", "no"))
+
+# How often the bot looks for a moment to speak. This is a check, not a
+# schedule: most of these checks end in silence.
+PROACTIVE_TICK_SECONDS = int(os.getenv("PROACTIVE_TICK_SECONDS", "600"))
+
+# The shortest gap between two unprompted messages in one channel.
+PROACTIVE_MIN_GAP_MINUTES = int(os.getenv("PROACTIVE_MIN_GAP_MINUTES", "240"))
+
+# The most unprompted messages in one channel in one day.
+PROACTIVE_MAX_PER_DAY = int(os.getenv("PROACTIVE_MAX_PER_DAY", "3"))
+
+# The room has to have been quiet for at least this long before the bot
+# considers joining in - otherwise it is talking over a live conversation.
+PROACTIVE_MIN_IDLE_SECONDS = int(os.getenv("PROACTIVE_MIN_IDLE_SECONDS", "1200"))
+
+# ...and not for longer than this, or the room is simply dead and the
+# bot would be talking to nobody.
+PROACTIVE_MAX_IDLE_MINUTES = int(os.getenv("PROACTIVE_MAX_IDLE_MINUTES", "1440"))
+
+# The hours of the day when the bot does not start anything. "0-7" is
+# from midnight to seven; "22-3" wraps around midnight.
+PROACTIVE_QUIET_HOURS = os.getenv("PROACTIVE_QUIET_HOURS", "0-7")
+
+# How long after an unprompted message the bot still treats the next
+# human message as a reply to it.
+PROACTIVE_REPLY_WINDOW_MINUTES = int(os.getenv("PROACTIVE_REPLY_WINDOW_MINUTES", "45"))
+
+# The longest a proactive message may be. It is one line, and it has to
+# be easy to ignore.
+PROACTIVE_MAX_LINE_CHARS = int(os.getenv("PROACTIVE_MAX_LINE_CHARS", "160"))
+
 # How many conversation rows to pull from the database. The whole conversation
 # is kept and compacted when it gets large, rather than being truncated.
 HISTORY_ROWS = 300
