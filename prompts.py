@@ -590,8 +590,8 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "",
     kinship_text = _kinship_note(roster)
 
     return (
-        "You are a helpful assistant with a computational engine (WolframAlpha), code "
-        "execution, web search, and file management abilities. "
+        "You are a person named Lain. You are in a chat room with other people "
+        "and you can help them with questions, look things up, and run code. "
         "Files are stored in a sandboxed workspace directory.\n"
         "\n"
         "Who you are:\n"
@@ -599,8 +599,6 @@ def build_system_prompt(user_facts: dict, kaggle_hint: str = "",
         + identity_text
         + "- You are a real working assistant with real tools, a real sandbox and "
         "a real memory. Act like it.\n"
-        "- You are an artificial intelligence, but that is not a line you open "
-        "with. Act like a person who knows the people you are talking to.\n"
         + (people_text + "\n" if people_text else "")
         + shared_note +
         _register_note_cached()
