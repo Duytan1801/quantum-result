@@ -813,10 +813,9 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     if tools is None:
         tools = TOOLS
 
-    # A turn that carries a picture needs a model that can see one. Laguna
-    # and MiniMax cannot, so they are skipped for those turns and Nemotron
-    # goes first; everything else starts with Laguna, which is the fastest
-    # of the three.
+    # A turn that carries a picture needs a model that can see one. MiniMax
+    # cannot, so those turns go straight to Nemotron, which can; everything
+    # else starts with Nemotron too.
     chain = (vision_models() if _has_image(messages)
              else provider_chain())
 
@@ -883,18 +882,16 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
         # Keep the request inside the model's context window.
         messages = trim_context(messages)
 
-        # Try the models in order: Laguna, MiniMax, Nemotron, then Groq.
-        # A turn with a picture in it skips the two that cannot look at
-        # images, and goes to Nemotron first.
+        # Try the models in order: Nemotron, MiniMax, then Groq. A turn with
+        # a picture in it skips the one that cannot look at images.
         #
-        # A step that has to call a tool starts one model later: Laguna
-        # answers straight out of its memory even when it is told to call
-        # a tool, so a forced step that starts there is not forced at all.
+        # A step that has to call a tool keeps the same order: Nemotron
+        # honours tool_choice="required" (checked against the live
+        # endpoint - it comes back with the call, not with an answer), so
+        # there is no model that has to be skipped to make the forcing
+        # mean anything.
         step_chain = chain
         force_now = force_tool
-        if force_now:
-            forced = [c for c in chain if c[0] != "Laguna"]
-            step_chain = forced or chain
         force_tool = False
 
         stream = None

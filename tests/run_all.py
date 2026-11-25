@@ -36,7 +36,7 @@ QUICK = [
 
 LIVE = [
     "test_decisions.py",
-    "live_probe_laguna.py",
+    "live_probe_super.py",
     "probe_tool_retry.py",
     "probe_personal_deep.py",
     "probe_natural.py",

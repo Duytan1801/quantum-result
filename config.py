@@ -20,27 +20,33 @@ def _require(*names: str) -> None:
 
 # --- LLM providers --------------------------------------------------------
 #
-# Four models, tried in this order. The first one that answers does the
+# Three models, tried in this order. The first one that answers does the
 # work; the others are there for when one is down, rate-limited, or simply
 # cannot do what was asked.
 #
-# 1. Laguna XS 2.1 (poolside) - a code model, and it goes first. It
-#    answers in about a second, it handles tool calls, thinking and
-#    one-character answers, and it is nearly as good as Nemotron on the
-#    work. Speed is the reason it is first.
-# 2. MiniMax M3.1 Flash - the general model. This is the one that does
-#    the tasks and the research: it is the steadier of the two at the
-#    conversational register, where a reply has to sound like a person.
-# 3. Nemotron 3.5 Super VL - the strong one. Slower, but better at the
-#    long tool-calling turns that need several steps, and it is the only
-#    one that can look at a picture.
-# 4. Groq - the last resort. A different provider with its own key, so it
-#    only runs when NVIDIA's endpoint is out for all three of the above.
+# 1. Nemotron 3.5 Super VL - the strong one, and it goes first. It is the
+#    model that holds the whole picture of a turn: the long tool-calling
+#    rounds that need several steps, the reading of a table, the register
+#    of a sentence. It honours tool_choice="required" (checked against the
+#    live endpoint), and it is the one that can look at a picture.
 #
-# The first three are served from NVIDIA's endpoint, so they share one
-# client and one key. Only the model name changes between them.
+#    The cost is time. On the public endpoint it takes roughly 17s to the
+#    first token with thinking off and 26s with it on, so a reply starts
+#    late. That is the trade being made knowingly: a better answer that
+#    arrives later, rather than a quick one that says the wrong thing.
+#
+# 2. MiniMax M3.1 Flash - the fallback. It is quick and it is steady, but
+#    the endpoint rate-limits it to about four to six requests a minute,
+#    so it cannot carry the ordinary traffic. It is here for when
+#    Nemotron is down or the endpoint is busy.
+#
+# 3. Groq - the last resort. A different provider with its own key, so it
+#    only runs when NVIDIA's endpoint is out for both of the above.
+#
+# Laguna XS 2.1 used to be first. It was quick, but it was a code model
+# answering a conversation, and it was reading the room worse than the
+# general models did, so it is gone from the chain entirely.
 
-LAGUNA_MODEL = os.getenv("LAGUNA_MODEL", "poolside/laguna-xs-2.1")
 MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "minimaxai/minimax-m3.1-flash")
 NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3.5-super-vl-120b-a12b")
 BOLT_MODEL = os.getenv("BOLT_MODEL", "nvidia/nemotron-3.5-bolt-e4b")
@@ -164,30 +170,28 @@ groq_client = (
 
 
 def provider_chain() -> list[tuple[str, AsyncOpenAI, str]]:
-    """Providers to try in order: Laguna, MiniMax, Nemotron, Groq.
+    """Providers to try in order: Nemotron, MiniMax, Groq.
 
     Each entry is (name, client, model). The name is what
-    `extra_body_for` keys off, so "Laguna", "MiniMax", "NVIDIA" and
-    "Groq" must all be recognised there.
+    `extra_body_for` keys off, so "NVIDIA", "MiniMax" and "Groq" must
+    all be recognised there.
 
-    The order is deliberate. Laguna XS 2.1 goes first because it is
-    quick - it answers in about a second - and it can call tools, think,
-    and handle everything the bot does, so it does the ordinary work.
-    MiniMax M3.1 Flash is next: the general model, and the steadier of
-    the two at the conversational register, where a reply has to sound
-    like a person. Nemotron 3.5 Super VL is third: slower and stronger,
-    it covers the long multi-step turns, and because it is the one that
-    can read a picture, a turn with an image is sent to it directly (see
-    `vision_models`). Groq is the last resort - a different provider,
-    with its own key, so it only runs when NVIDIA's endpoint is out for
-    all three of the models above.
+    The order is deliberate. Nemotron 3.5 Super VL goes first because it
+    is the one that holds the whole picture of a turn: the long
+    tool-calling rounds, the reading of a table, the register of a
+    sentence. It is also the only one in the chain that can read a
+    picture, so a turn with an image goes to it directly (see
+    `vision_models`). MiniMax M3.1 Flash is next: quick and steady, but
+    the endpoint rate-limits it to four to six requests a minute, so it
+    is a fallback rather than the thing carrying the traffic. Groq is the
+    last resort - a different provider, with its own key, so it only runs
+    when NVIDIA's endpoint is out for both of the models above.
 
     Groq is only in the chain when its key is configured; without one
     there is nothing to fall back to.
     """
-    chain = [("Laguna", nvidia_client, LAGUNA_MODEL),
-             ("MiniMax", nvidia_client, MINIMAX_MODEL),
-             ("NVIDIA", nvidia_client, NVIDIA_MODEL)]
+    chain = [("NVIDIA", nvidia_client, NVIDIA_MODEL),
+             ("MiniMax", nvidia_client, MINIMAX_MODEL)]
     if groq_client is not None:
         chain.append(("Groq", groq_client, GROQ_MODEL))
     return chain
@@ -196,8 +200,9 @@ def provider_chain() -> list[tuple[str, AsyncOpenAI, str]]:
 def vision_models() -> list[tuple[str, AsyncOpenAI, str]]:
     """The chain for a turn that has a picture in it.
 
-    Neither Laguna nor MiniMax can look at images, so a turn with an
-    attachment goes straight to Nemotron, which can.
+    MiniMax cannot look at images, so a turn with an attachment goes
+    straight to Nemotron, which can. Groq's llama-3.3 is text only, so
+    it is no use here either.
     """
     return [("NVIDIA", nvidia_client, NVIDIA_MODEL)]
 
@@ -213,13 +218,13 @@ def extra_body_for(provider_name: str, thinking: bool = True) -> dict:
     `thinking=False` is for the small calls that need a direct answer - the
     presence classifier, for instance, which has one character to say.
 
-    Laguna, MiniMax and Bolt are all served from NVIDIA's endpoint and take the
+    MiniMax and Bolt are also served from NVIDIA's endpoint and take the
     same flag, so they are treated like NVIDIA here. Both were checked
     against the live endpoint: with thinking on, they reason in
     `reasoning_content` and answer in `content`, exactly like Nemotron
     does.
     """
-    if provider_name in ("NVIDIA", "MiniMax", "Laguna", "BOLT"):
+    if provider_name in ("NVIDIA", "MiniMax", "BOLT"):
         return {"chat_template_kwargs": {"enable_thinking": bool(thinking)}}
     return {}
 

@@ -25,7 +25,7 @@ character. It sees the message, who wrote it, and who else is in the
 chat, so it can tell a question aimed at the bot from a question aimed
 at the person next to it.
 
-That scanner is MiniMax, while the answering model is Laguna. They are
+That scanner is Bolt, while the answering model is Nemotron. They are
 not the same on purpose: the scanner has to be quick and literal about
 two characters, the answer has to sound like a person, and a bot that
 read the room with the same model that then wrote the reply would be
@@ -363,12 +363,18 @@ def scanner_models() -> tuple[str, ...]:
     """The models that read the room, in order.
 
     Bolt scans first - it is smaller and a fraction of the cost, and it's
-    good at the presence question. Nemotron is behind it for when Bolt
-    or the endpoint is rate-limited. Laguna is deliberately not here: it
-    answers. The scanner and the answer are two different jobs - one
-    wants a literal two-character verdict, the other wants to sound
-    like a person - and running both on the same model would mean the
-    bot marks its own homework.
+    good at the presence question. Nemotron 3.5 Super VL is behind it for
+    when Bolt or the endpoint is rate-limited. The scanning is NVIDIA's
+    work and stays there: the scanner wants a literal two-character
+    verdict, and the answer wants to sound like a person, so they are two
+    different jobs.
+
+    The fallback does share a model with the answering chain, which is a
+    real weakness - a scan that fell through to Super is the same
+    model's opinion as the reply. It is kept because Super is the only
+    NVIDIA model on the endpoint that can take the scan properly, and
+    because a scan that returned nothing leaves the bot silent, which is
+    the worse failure.
 
     Groq is not here either. It is the answering chain's last resort,
     and a scan that quietly fell through to another provider would be
@@ -406,13 +412,14 @@ async def classify_reply(text: str, *, author_name: str, roster_line: str,
     quiet than wrong.
 
     The scanner is Bolt (Nemotron 3.5 bolt), with Nemotron 3.5 Super VL as
-    the fallback. The answering model is Laguna, and the two are deliberately
-    different: reading a room and answering in it want different things, and
-    the scanner is the one that has to be quick and literal about two
-    characters while the answer is the one that has to sound like a
-    person. Laguna is not used here - if the scanner and the answer came
-    from the same model, the bot would be marking its own homework and
-    would inherit the same blind spots in both.
+    the fallback. The answering model is Nemotron as well, but the scan
+    runs on Bolt first: reading a room and answering in it want different
+    things, and the scanner is the one that has to be quick and literal
+    about two characters while the answer is the one that has to sound like
+    a person. Bolt is not used to answer and Nemotron is not used to scan
+    first - if the scanner and the answer came from the same model, the bot
+    would be marking its own homework and would inherit the same blind
+    spots in both.
 
     Groq is not used here either: it is the last resort of the answering
     chain, and a failed scan should not quietly become a different

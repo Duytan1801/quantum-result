@@ -6,8 +6,8 @@ to each scanner with the room as it was at that moment.
 
 Three scanners, all reading the room, all answering the same question:
 
-  minimax   - the generative classifier, MiniMax first (the user's
-              choice: MiniMax scans, Laguna answers)
+  minimax   - the generative classifier, MiniMax first (an earlier
+              choice: MiniMax scans, the answer comes from elsewhere)
   bolt      - the same prompt, but on Nemotron 3.5 Bolt e4b, which is
               a much smaller and much faster model
   rerank    - the reranker, with example messages as the passages

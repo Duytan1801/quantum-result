@@ -1,8 +1,9 @@
-"""A live run with Laguna first in the chain.
+"""A live run with Nemotron first in the chain.
 
-The same three checks as before - a personal message, a technical
-question, and the cache - but now the first model in the chain is Laguna,
-so this is what the bot will actually sound like.
+The same four checks as before - a personal message, a technical
+question, the cache, and a passing remark - but now the first model in
+the chain is Nemotron 3.5 Super VL, so this is what the bot will
+actually sound like.
 """
 
 import asyncio
@@ -24,7 +25,7 @@ from cache import CACHES  # noqa: E402
 
 JADE = {"id": "909453181916938301", "name": "𝐣𝐚𝐝𝐞_𝐦𝟖", "plain": "jade_m8"}
 DAMIAN = {"id": "1499211380052721684", "name": "Lain", "plain": "Lain"}
-SCOPES = ["1499211380052721684", "channel:1569657875368902666"]
+SCOPES = ["149921138916938301", "channel:1569657875368902666"]
 
 FAILED = []
 PASSED = 0

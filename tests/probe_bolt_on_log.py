@@ -1,6 +1,6 @@
 """Every candidate scanner over the real channel log.
 
-One scanner: Bolt, now as the presence scanner, with Laguna doing the
+One scanner: Bolt, now as the presence scanner, with Nemotron doing the
 answering. Every human message in the last hundred messages of #model,
 put to the classifier with the room as it was at that moment.
 

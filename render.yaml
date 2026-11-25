@@ -20,8 +20,6 @@ services:
         sync: false
       - key: NVIDIA_API_KEY
         sync: false
-      - key: LAGUNA_MODEL
-        value: poolside/laguna-xs-2.1
       - key: MINIMAX_MODEL
         value: minimaxai/minimax-m3.1-flash
       - key: NVIDIA_MODEL

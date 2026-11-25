@@ -83,26 +83,28 @@ print("=" * 70)
 
 from config import provider_chain, vision_models, BOLT_MODEL  # noqa: E402
 
-check("the chain is Laguna, MiniMax, Nemotron",
-      [n for n, _, _ in provider_chain()], ["Laguna", "MiniMax", "NVIDIA"])
+check("the chain is Nemotron, MiniMax",
+      [n for n, _, _ in provider_chain()], ["NVIDIA", "MiniMax"])
 check("the vision chain is Nemotron",
       [n for n, _, _ in vision_models()], ["NVIDIA"])
 
-# The answer and the scan are two different models on purpose: Laguna
-# answers, MiniMax reads the room. If they were the same, the bot would
+# The answer and the scan are two different models on purpose: Nemotron
+# answers, Bolt reads the room. If they were the same, the bot would
 # be marking its own homework.
 import presence  # noqa: E402
-from config import LAGUNA_MODEL, MINIMAX_MODEL, NVIDIA_MODEL  # noqa: E402
+from config import BOLT_MODEL, MINIMAX_MODEL, NVIDIA_MODEL  # noqa: E402
 
-check("the answer chain starts with Laguna",
-      provider_chain()[0][2], LAGUNA_MODEL)
+check("the answer chain starts with Nemotron",
+      provider_chain()[0][2], NVIDIA_MODEL)
 check("the scanner is Bolt", presence.scanner_models()[0], BOLT_MODEL)
 check("the scanner falls back to Nemotron",
       presence.scanner_models(), (BOLT_MODEL, NVIDIA_MODEL))
-check_true("the scanner does not scan with the answering model",
-           LAGUNA_MODEL not in presence.scanner_models())
+check_true("the scanner does not scan with the answering model first",
+           presence.scanner_models()[0] != provider_chain()[0][2])
 check_true("the scanner does not fall back to Groq",
            "groq" not in " ".join(presence.scanner_models()).lower())
+check_true("Laguna is gone from the chain",
+           "laguna" not in " ".join(m for _, _, m in provider_chain()).lower())
 
 print()
 print("=" * 70)
@@ -336,9 +338,9 @@ check("a reply with no acknowledgement is untouched",
 # both were giving the game away: a "Step 1 -" line and a tool name in
 # the footer are the bot talking about its own insides.
 check("the footer is just the model",
-      agent._footer_for({"model": "poolside/laguna-xs-2.1",
+      agent._footer_for({"model": "nvidia/nemotron-3.5-super-vl-120b-a12b",
                          "tools_used": ["web_search"]}),
-      "poolside/laguna-xs-2.1")
+      "nvidia/nemotron-3.5-super-vl-120b-a12b")
 check_true("the status line has no step number",
            "**Step" not in inspect.getsource(agent.run_agent_loop))
 
@@ -591,11 +593,14 @@ asyncio.run(presence_probe())
 from config import extra_body_for  # noqa: E402
 
 check("thinking can be switched off for a short reply",
-      extra_body_for("Laguna", thinking=False),
+      extra_body_for("NVIDIA", thinking=False),
       {"chat_template_kwargs": {"enable_thinking": False}})
 check("thinking is on by default",
-      extra_body_for("Laguna", thinking=True),
+      extra_body_for("NVIDIA", thinking=True),
       {"chat_template_kwargs": {"enable_thinking": True}})
+check("MiniMax takes the same switch",
+      extra_body_for("MiniMax", thinking=False),
+      {"chat_template_kwargs": {"enable_thinking": False}})
 
 import inspect  # noqa: E402
 
