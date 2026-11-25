@@ -11,6 +11,9 @@ import time
 import config
 from cache import CACHES
 from config import (
+    ANSWER_RETRY_ATTEMPTS,
+    ANSWER_RETRY_DELAY,
+    ANSWER_RETRY_MAX_WAIT,
     HISTORY_ROWS,
     MAX_AGENT_STEPS,
     NVIDIA_MODEL,
@@ -105,6 +108,14 @@ def needs_fresh_data(message: str) -> bool:
     if any(marker in text for marker in _FRESHNESS_MARKERS):
         return True
     return any(year in text for year in _RECENT_YEARS)
+
+
+# --- When it is worth waiting ----------------------------------------------
+#
+# The rule itself lives in failures.py, so the answer path and the
+# presence scanner decide the same way. It is imported here under the
+# name the rest of the agent uses.
+from failures import is_transient  # noqa: E402,F401
 
 
 FRESHNESS_REMINDER = (
@@ -866,6 +877,14 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     # Whether the next step has to call a tool. The model is told to, and
     # the step is not allowed to end without one.
     force_tool = False
+    # How many times this turn has been tried again because it produced
+    # nothing: no model would answer, the stream died half way, or the
+    # model said nothing at all. The person who asked is still waiting,
+    # so the turn goes round again after a short wait.
+    no_answer_attempts = 0
+    # Whether the next pass of the loop is a retry rather than a new step,
+    # so it does not eat into the step budget.
+    retrying = False
 
     while True:
         if step_count >= max_steps:
@@ -877,7 +896,9 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                 # tool-free call so the work it did is not thrown away.
                 final_answer = await _summarise_at_limit(messages, max_tokens)
             break
-        step_count += 1
+        if not retrying:
+            step_count += 1
+        retrying = False
 
         # Keep the request inside the model's context window.
         messages = trim_context(messages)
@@ -896,24 +917,56 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
 
         stream = None
         last_error = None
-        for _name, client, model in step_chain:
-            try:
-                stream = await client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0.6,
-                    max_completion_tokens=max_tokens,
-                    top_p=0.95,
-                    stream=True,
-                    tools=tools,
-                    tool_choice="required" if force_now else "auto",
-                    extra_body=extra_body_for(_name, thinking=thinking),
-                )
-                used_model = model
+        # No model would take the call. A rate limit, a service that is
+        # full, a connection that dropped: those clear on their own, so
+        # the call is tried again - five seconds apart, for as long as it
+        # takes. A bad key or a model that does not exist is not one of
+        # those, and waiting does not help, so it is given up on at once.
+        waited = 0.0
+        while True:
+            transient = False
+            for _name, client, model in step_chain:
+                try:
+                    stream = await client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=0.6,
+                        max_completion_tokens=max_tokens,
+                        top_p=0.95,
+                        stream=True,
+                        tools=tools,
+                        tool_choice="required" if force_now else "auto",
+                        extra_body=extra_body_for(_name, thinking=thinking),
+                    )
+                    used_model = model
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if is_transient(exc):
+                        transient = True
+                    continue
+
+            if stream is not None:
                 break
-            except Exception as exc:
-                last_error = exc
-                continue
+
+            if not transient:
+                # The provider said no, not "not now". Trying again would
+                # only make the person wait for an answer that is not
+                # coming.
+                logger.warning(f"the model would not answer the call "
+                               f"({str(last_error)[:120]}) - giving up")
+                break
+
+            if ANSWER_RETRY_MAX_WAIT and waited >= ANSWER_RETRY_MAX_WAIT:
+                logger.warning(f"still getting no answer after "
+                               f"{int(waited)}s of waiting - giving up")
+                break
+
+            waited += ANSWER_RETRY_DELAY
+            logger.warning(f"the provider is not taking the call "
+                           f"({str(last_error)[:120]}) - trying again in "
+                           f"{ANSWER_RETRY_DELAY}s")
+            await asyncio.sleep(ANSWER_RETRY_DELAY)
 
         if stream is None:
             if channel:
@@ -964,14 +1017,38 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                             tool_calls_accum[idx]["arguments"] += tc.function.arguments
         except Exception as exc:
             # A stream can fail mid-flight (rate limit, network drop).
-            if channel:
-                await channel.send(f"⚠️ LLM stream error: {str(exc)[:150]}")
-            return {
-                "answer": final_answer or "LLM stream error",
-                "tools_used": tools_used,
-                "steps": step_count,
-                "model": used_model,
-            }
+            #
+            # If the answer had already started, it stands - half an
+            # answer is worth more than none. If nothing came of the step,
+            # the step is tried again after a wait, because a turn that
+            # ends in "LLM stream error" is not a reply to anybody. A
+            # failure that a wait can fix is waited out, for as long as it
+            # takes; one that cannot be waited out is given up on.
+            if final_answer.strip():
+                if channel:
+                    await channel.send(f"⚠️ LLM stream error: {str(exc)[:150]}")
+                return {
+                    "answer": final_answer or "LLM stream error",
+                    "tools_used": tools_used,
+                    "steps": step_count,
+                    "model": used_model,
+                }
+
+            if not is_transient(exc):
+                if channel:
+                    await channel.send(f"⚠️ LLM stream error: {str(exc)[:150]}")
+                return {
+                    "answer": final_answer or "LLM stream error",
+                    "tools_used": tools_used,
+                    "steps": step_count,
+                    "model": used_model,
+                }
+
+            logger.warning(f"the stream died mid-answer ({str(exc)[:120]}), "
+                           f"trying again in {ANSWER_RETRY_DELAY}s")
+            await asyncio.sleep(ANSWER_RETRY_DELAY)
+            retrying = True
+            continue
 
         if tool_calls_accum:
             # This round used tools. The run of them is what the self-check
@@ -1043,6 +1120,27 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                         "content": "Continue your response from where you left off.",
                     })
                 continue
+
+            if not step_content.strip() and not final_answer.strip():
+                # The model finished the step without saying anything.
+                # That is not an answer, and posting "(no response)" in a
+                # chat room is not a reply to anybody - so the turn is
+                # asked again after a wait, with the message put back in
+                # front of it.
+                if no_answer_attempts < ANSWER_RETRY_ATTEMPTS:
+                    no_answer_attempts += 1
+                    logger.warning(f"the model produced no answer, retrying "
+                                   f"in {ANSWER_RETRY_DELAY}s")
+                    await asyncio.sleep(ANSWER_RETRY_DELAY)
+                    nudge = "You produced no answer. Say it now."
+                    if original_request:
+                        nudge += (
+                            "\n\nThe message to answer is this one, and no "
+                            f"other:\n\"{original_request[:1500]}\""
+                        )
+                    messages.append({"role": "user", "content": nudge})
+                    retrying = True
+                    continue
 
             if require_tool and not tools_used and nudged < 1:
                 # The model answered a real job out of its memory. Before

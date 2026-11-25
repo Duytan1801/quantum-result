@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import time
+import traceback
 
 import discord
 from discord.ext import commands
@@ -31,7 +32,8 @@ from people import (
 )
 from presence import ChannelTracker, WAIT_SECONDS, channel_scope, decide
 from scopes import scope_plan
-from config import (NEWS_CHANNEL_ID, NEWS_MAX_AGE_HOURS, is_detached)
+from config import (ANSWER_RETRY_ATTEMPTS, ANSWER_RETRY_DELAY,
+                    NEWS_CHANNEL_ID, NEWS_MAX_AGE_HOURS, is_detached)
 from sandbox import run_code_in_sandbox
 from storage import (
     db_delete_fact,
@@ -101,6 +103,24 @@ WAITING: dict[str, asyncio.Task] = {}
 # and the replies use the same copy.
 NEWS_CACHE: tuple[float, list] | None = None
 NEWS_CACHE_TTL = 300
+
+
+async def _last_human_at(channel) -> float:
+    """When somebody last spoke in this channel, according to the channel.
+
+    The in-memory state forgets everything when the bot restarts, and the
+    bot restarts every time it is deployed. The channel does not forget,
+    so this is what the proactive tick uses to know when the room was
+    last alive.
+    """
+    try:
+        async for msg in channel.history(limit=30):
+            if msg.author.bot:
+                continue
+            return msg.created_at.timestamp()
+    except Exception as exc:
+        print(f"could not read the last message in {channel}: {exc}")
+    return 0.0
 
 
 async def _read_news(limit: int = 8, *, force: bool = False) -> list:
@@ -686,13 +706,25 @@ async def on_ready():
                 continue
             if is_detached(cid):
                 continue
-            ok, why = gate(cid, now=now)
-            if not ok:
-                print(f"proactive: skipping {cid} - {why}")
-                continue
 
             channel = bot.get_channel(int(cid))
             if channel is None:
+                continue
+
+            # When the room was last talked in, from the channel itself.
+            #
+            # The in-memory state only knows about the messages that arrived
+            # while the bot was running, so after a restart - and the bot is
+            # restarted every time it is deployed - it thought nobody had
+            # spoken in days, and stayed quiet. The channel knows better.
+            last_human = await _last_human_at(channel)
+            if last_human:
+                state = state_for(cid)
+                state.last_human = max(state.last_human, last_human)
+
+            ok, why = gate(cid, now=now)
+            if not ok:
+                print(f"proactive: skipping {cid} - {why}")
                 continue
 
             # Do not talk over a turn that is already happening.
@@ -841,6 +873,40 @@ async def on_message(message):
         if not content:
             content = "Hello!"
 
+        # The turn itself, and the safety net around it.
+        #
+        # A turn that raises is a turn that dies: the message is taken, the
+        # work starts, and then nothing is posted and the person is left
+        # waiting. That happened - the conversation shows a message taken
+        # and never answered - so the turn is tried again, and if it keeps
+        # failing the person is told, in plain words, rather than being
+        # left in silence.
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                await _answer_once(content, final=final)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                traceback.print_exc()
+                print(f"the turn failed in {channel_id}: {exc}")
+                if attempts <= ANSWER_RETRY_ATTEMPTS:
+                    print(f"trying the turn again in {ANSWER_RETRY_DELAY}s")
+                    await asyncio.sleep(ANSWER_RETRY_DELAY)
+                    continue
+                # It keeps failing. Say so, in the room's voice, rather
+                # than leaving the question hanging.
+                try:
+                    await message.channel.send(
+                        "sorry, that went wrong on my end - ask me again?")
+                except Exception:
+                    pass
+                return
+
+    async def _answer_once(content: str, final: bool = False):
+        """One attempt at the turn: the decision, the answer, the send."""
         async with _channel_lock(channel_id):
             # The room may have changed while this turn waited for its turn -
             # somebody else may have spoken, which makes it a shared channel. The

@@ -77,6 +77,7 @@ from config import (
     PROACTIVE_MAX_LINE_CHARS,
     PROACTIVE_MAX_PER_DAY,
     PROACTIVE_MIN_GAP_MINUTES,
+    PROACTIVE_MIN_IDLE_SECONDS,
     PROACTIVE_QUIET_HOURS,
     PROACTIVE_REPLY_WINDOW_MINUTES,
     extra_body_for,
@@ -247,7 +248,7 @@ def gate(channel_id: str, *, now: float | None = None, chat_on: bool = True,
     if state.day != day:
         state.day = day
         state.today = 0
-    if state.today >= PROACTIVE_MAX_PER_DAY:
+    if PROACTIVE_MAX_PER_DAY and state.today >= PROACTIVE_MAX_PER_DAY:
         return False, f"already said something {state.today} times today"
 
     # The gap grows when nobody answered last time. Each ignored message
@@ -264,7 +265,7 @@ def gate(channel_id: str, *, now: float | None = None, chat_on: bool = True,
 
     idle = (now - state.last_human) / 60
     idle_minutes = max(0, int(idle // 60))
-    if idle_minutes < 20:
+    if idle < PROACTIVE_MIN_IDLE_SECONDS / 60:
         return False, f"the room was active {idle_minutes} minutes ago"
     if idle > PROACTIVE_MAX_IDLE_MINUTES:
         return False, f"the room has been quiet for {int(idle // 60)} hours"
@@ -285,8 +286,13 @@ _VIETNAMESE = re.compile(
 
 
 def _language(lines) -> str:
-    """The language the room is in, from what was said in it."""
-    text = " ".join(said for _, said in lines)
+    """The language the room is in, from what was said in it.
+
+    Only the people count. The bot's own replies are in its voice and
+    would otherwise decide the language by themselves.
+    """
+    people = [said for who, said in lines if who != "the bot"]
+    text = " ".join(people[-6:]) if people else " ".join(said for _, said in lines)
     return "Vietnamese" if _VIETNAMESE.search(text) else "English"
 
 
@@ -310,38 +316,85 @@ The room as it is right now:
 There are only three kinds of thing worth saying:
 - follow_up: pick up something they said earlier that is worth coming back to.
 - check_in: ask how one of them is doing, when there is something to ask about.
-- join: say something about the topic they were on.
+- join: say something about the topic they were on, or about today.
+
+This is the way a streamer talks to a chat that has gone quiet. If the room has been quiet for a minute, there is usually something to say - a thought about what they were talking about, a question, a reaction, something from today's news that connects. You are not interrupting anybody: nobody is talking.
 
 Decide whether there is something here worth one line, right now.
 
-Most of the time there is not. A quiet room is usually just a quiet room, and a message nobody asked for is easy to ignore. Say QUIET unless one of the three kinds clearly fits what was actually said.
+Say QUIET only when the moment is genuinely wrong - the room is busy, somebody is mid-sentence, or there is nothing to connect to. A room that has been quiet for a while is exactly the room you are here for.
 
-If there is news in the context above, it is news the room may not have talked about. That is a reason to say something, not a reason to say something: the news has to connect to what the room is actually about, or to something one of them has been dealing with. Do not summarise the news back to them - they can read it. A thought or a question about it is worth saying; the headline is not.
+If there is news in the context above, it is news the room may not have talked about. That is a reason to say something, not a reason to say something: the news has to connect to what the room is actually about, or to something one of them has been dealing with. Do not summarise the news back to them - they can read it, and they read it faster than you can say it. A reaction, a thought or a question is worth saying; the headline is not.
 
-Never propose a fact, a number, a link, or anything you would have to look up. You are not going to use a tool for this, so do not suggest something that needs one.
+If you want to say something about a specific fact, a number, a name or anything current, put it in the last part as a search query - it gets looked up before you speak, so you can talk about something real. Do not put a link or a headline in the thing you want to say.
 
 Answer on one line, in exactly this form:
-SPEAK <kind> | <the thing you want to say, in a few words>
+SPEAK <kind> | <the thing you want to say, in a few words> | <what to look up>
 QUIET <why not>
+
+The last part is what will be searched for before the line is written. Put a
+short search query there - the subject you want to know more about, so
+that what you say is about something real and current rather than about
+nothing. If what you want to say needs no looking up, put a dash.
 """
 
 
-def _parse_moment(text: str) -> tuple[str, str]:
-    """Read the moment-decision. Returns (kind, target); kind is "" for quiet."""
+def _parse_moment(text: str) -> tuple[str, str, str]:
+    """Read the moment-decision.
+
+    Returns (kind, target, query); kind is "" for quiet. The query is
+    what the bot looks up before it writes the line, so the line can be
+    about something real.
+    """
     if not text:
-        return "", ""
+        return "", "", ""
     line = text.strip().splitlines()[0].strip()
     if not line.upper().startswith("SPEAK"):
-        return "", ""
+        return "", "", ""
     body = line[5:].strip()
-    kind, _, target = body.partition("|")
+    kind, _, rest = body.partition("|")
     kind = kind.strip().lower().replace(" ", "_")
     if kind not in KINDS:
-        return "", ""
+        return "", "", ""
+    target, _, query = rest.partition("|")
     target = target.strip()
     if not target:
-        return "", ""
-    return kind, target
+        return "", "", ""
+    query = query.strip().strip("-").strip()
+    if query.lower() in ("none", "nothing", "no"):
+        query = ""
+    return kind, target, query
+
+
+async def gather(query: str, *, timeout: float = 25.0, limit: int = 4000) -> str:
+    """Look something up, so the line is about something real.
+
+    A streamer who has not read anything has nothing to say that is
+    worth hearing. So the bot is allowed to look things up before it
+    speaks - once, with a short query, and only when the moment
+    decision asked for it.
+
+    If the search fails or takes too long, the line is written without
+    it. A slow bot is worse than a quiet one.
+    """
+    query = (query or "").strip()
+    if not query:
+        return ""
+
+    try:
+        from tools import web_search
+
+        result = await asyncio.wait_for(web_search(query, count=4), timeout)
+    except asyncio.TimeoutError:
+        print(f"proactive: the search for {query!r} took too long")
+        return ""
+    except Exception as exc:
+        print(f"proactive: the search for {query!r} failed: {str(exc)[:100]}")
+        return ""
+
+    if not result or result.startswith("Error") or result == "No results found.":
+        return ""
+    return result[:limit]
 
 
 async def _complete(model: str, messages, max_tokens: int = 200,
@@ -366,15 +419,17 @@ async def _complete(model: str, messages, max_tokens: int = 200,
 
 
 async def decide_moment(*, bot_name: str, people: str, channel_name: str,
-                        lines, now: float, news=None) -> tuple[str, str]:
+                        lines, now: float, news=None,
+                        idle_minutes=None) -> tuple[str, str, str]:
     """Does the bot have something it wants to say?
 
     The small model reads the room and answers with one of the three
     kinds, or with QUIET. The answer is not the message - it is the
-    reason to write one.
+    reason to write one, and the reason includes what to look up.
     """
     context = _context_text(channel_name=channel_name, people=people,
-                             lines=lines, now=now, news=news)
+                             lines=lines, now=now, news=news,
+                             idle_minutes=idle_minutes)
     prompt = MOMENT_PROMPT.format(bot_name=bot_name, people=people,
                                    context=context)
     for model in MOMENT_MODELS:
@@ -382,17 +437,17 @@ async def decide_moment(*, bot_name: str, people: str, channel_name: str,
                                max_tokens=120, thinking=False)
         if not text:
             continue
-        kind, target = _parse_moment(text)
+        kind, target, query = _parse_moment(text)
         if kind:
-            return kind, target
+            return kind, target, query
         # A clean QUIET is an answer too: stop here and do not ask again.
         if text.strip().upper().startswith("QUIET"):
-            return "", ""
+            return "", "", ""
     return "", ""
 
 
 def _context_text(*, channel_name: str, people: str, lines, now: float,
-                  news=None) -> str:
+                  news=None, idle_minutes=None) -> str:
     """The structured context the moment-decision reads."""
     recent = list(lines or [])[-8:]
     body = [
@@ -400,6 +455,8 @@ def _context_text(*, channel_name: str, people: str, lines, now: float,
         f"People here: {people or 'unknown'}",
         f"Language: {_language(recent)}",
     ]
+    if idle_minutes is not None:
+        body.append(f"The room has been quiet for {int(idle_minutes)} minutes.")
     if recent:
         body.append(f"The last thing said: \"{recent[-1][1][:180]}\"")
     body.append("What has been said, oldest first:")
@@ -432,7 +489,7 @@ def _context_text(*, channel_name: str, people: str, lines, now: float,
 async def write_line(*, kind: str, target: str, bot_name: str,
                      bot_aliases=(), roster=None, speaker=None,
                      user_facts: dict | None = None, voice_lines=(),
-                     history=(), news=None) -> str:
+                     history=(), news=None, found="", language="") -> str:
     """The sentence itself, in the room's voice."""
     from prompts import build_proactive_prompt
 
@@ -446,6 +503,8 @@ async def write_line(*, kind: str, target: str, bot_name: str,
         kind=kind,
         target=target,
         news=news,
+        found=found,
+        language=language,
     )
     messages = [{"role": "system", "content": system}]
     messages.extend(list(history or [])[-12:])
@@ -453,7 +512,8 @@ async def write_line(*, kind: str, target: str, bot_name: str,
         "role": "user",
         "content": ("Say it now. One line, the way you would say it to them, "
                     "and nothing else - no explanation, no quotation marks "
-                    "around it, no mention of what you are doing."),
+                    "around it, no mention of what you are doing, and no "
+                    "mention of having looked anything up."),
     })
 
     from config import provider_chain
@@ -557,22 +617,37 @@ async def speak_once(*, channel_id: str, channel, bot, bot_name: str,
     """
     now = now if now is not None else time.time()
 
-    kind, target = await decide_moment(
+    state = state_for(channel_id)
+    idle_minutes = ((now - state.last_human) / 60) if state.last_human else None
+
+    kind, target, query = await decide_moment(
         bot_name=bot_name,
         people=people,
         channel_name=channel_name or f"channel {channel_id}",
         lines=lines,
         now=now,
         news=news,
+        idle_minutes=idle_minutes,
     )
     if not kind:
         print(f"proactive: staying quiet in {channel_id} - nothing worth saying")
         return ""
 
+    # Look something up, so the line is about something real. The
+    # moment-decision asked for it; this is where it happens.
+    found = ""
+    if query:
+        print(f"proactive: looking up {query!r}")
+        found = await gather(query)
+
     from prompts import voice_examples
 
-    voice_lines = voice_examples([{"role": "user", "content": said}
-                                  for _, said in lines], limit=3)
+    # The voice anchor is the people, not the bot: the bot's own replies
+    # are in its voice already, and learning them from itself is how a
+    # bot ends up quoting itself.
+    human = [{"role": "user", "content": said}
+             for who, said in lines if who != "the bot"]
+    voice_lines = voice_examples(human, limit=3)
     text = await write_line(
         kind=kind,
         target=target,
@@ -581,6 +656,8 @@ async def speak_once(*, channel_id: str, channel, bot, bot_name: str,
         roster=roster,
         voice_lines=voice_lines,
         news=news,
+        found=found,
+        language=_language(lines),
     )
     if not text:
         print(f"proactive: no line came back in {channel_id}")

@@ -81,7 +81,12 @@ _CLASSIFIER_TOKENS = int(os.getenv("PRESENCE_CLASSIFIER_TOKENS", "4"))
 # model and falls back. The fallback is there for a provider that is
 # down, not for a provider that is busy for one second, and the wait is
 # short enough that the person has not noticed it.
-_RETRY_DELAY = float(os.getenv("PRESENCE_RETRY_DELAY", "2.0"))
+#
+# A failure that a wait can fix is waited out for as long as it takes -
+# a 429 or a service that is full clears on its own. A failure that no
+# wait can fix (a bad key, a model that does not exist) is given up on at
+# once, so the scanner falls through to the next model.
+_RETRY_DELAY = float(os.getenv("PRESENCE_RETRY_DELAY", "5.0"))
 
 # How long to wait when a message looks unfinished. Long enough for the
 # rest of a sentence to arrive, short enough that the person does not
@@ -399,11 +404,20 @@ def _rate_limited(exc: Exception) -> bool:
     The OpenAI client raises a RateLimitError for a 429, but the check is
     done on the text as well, because a provider can also put the code
     in the body of an ordinary error.
+
+    The rule is the shared one - a failure a wait can fix is a failure the
+    bot waits out - so the answer path and this scanner behave the same
+    way when the provider is busy.
     """
-    status = getattr(exc, "status_code", None)
-    if status == 429:
-        return True
-    return "429" in str(exc) or "rate limit" in str(exc).lower()
+    try:
+        from failures import is_transient
+
+        return is_transient(exc)
+    except Exception:
+        status = getattr(exc, "status_code", None)
+        if status == 429:
+            return True
+        return "429" in str(exc) or "rate limit" in str(exc).lower()
 
 
 async def classify_reply(text: str, *, author_name: str, roster_line: str,
@@ -477,10 +491,17 @@ async def classify_reply(text: str, *, author_name: str, roster_line: str,
                 )
                 content = (resp.choices[0].message.content or "").strip()
             except Exception as exc:
-                if _rate_limited(exc) and not waited:
-                    # Busy, not broken: wait a moment and ask again
-                    # before giving up on this model.
-                    waited = True
+                if _rate_limited(exc):
+                    # Busy, not broken: wait and ask again, for as long as
+                    # it takes. A rate limit clears in seconds and a full
+                    # service clears in a minute, and the alternative -
+                    # giving up - means the message is never answered at
+                    # all, because the scanner is what decides whether it
+                    # was meant for the bot.
+                    if not waited:
+                        waited = True
+                    print(f"the scanner is busy ({str(exc)[:80]}), trying "
+                          f"again in {_RETRY_DELAY}s")
                     await asyncio.sleep(_RETRY_DELAY)
                     continue
                 print(f"presence classifier failed on {model}: {exc}")
@@ -564,8 +585,13 @@ async def needs_lookup(text: str) -> bool:
                 )
                 content = (resp.choices[0].message.content or "").strip().upper()
             except Exception as exc:
-                if _rate_limited(exc) and not waited:
-                    waited = True
+                if _rate_limited(exc):
+                    # Busy, not broken: wait and ask again, for as long as
+                    # it takes.
+                    if not waited:
+                        waited = True
+                    print(f"the lookup check is busy ({str(exc)[:80]}), "
+                          f"trying again in {_RETRY_DELAY}s")
                     await asyncio.sleep(_RETRY_DELAY)
                     continue
                 print(f"lookup check failed on {model}: {exc}")
@@ -642,7 +668,8 @@ async def decide(message, *, is_dm: bool, shared: bool, bot_user_id=None,
     hits = names_in(text, bot_names)
     name_note = _name_note(hits, collisions)
     aliases = ", ".join(n for n in (bot_names or ()) if n != bot_name.lower())
-    key = str(getattr(message, "id", "") or "")
+    message_id = str(getattr(message, "id", "") or "")
+    key = message_id
     if key:
         key = f"{key}:{cache_extra}"
     cached = _DECISIONS.get(key) if key else None
@@ -663,6 +690,25 @@ async def decide(message, *, is_dm: bool, shared: bool, bot_user_id=None,
         )
         if key and cached is not None:
             _cache_put(key, cached)
+
+    # A message the bot has already decided to answer stays decided.
+    #
+    # The classifier is asked about the same message twice: once when it
+    # arrives, and again after the person has stopped typing. The second
+    # look is allowed to turn "wait" into "answer" - that is what it is
+    # for - but it is not allowed to turn "answer" into silence.
+    #
+    # It was, and the cost was a message that was plainly for the bot
+    # ("What u thinking bout this lain") being read as one thing on the
+    # first look and another on the second, and being dropped in between.
+    # The bot had already decided; a second opinion that disagrees does
+    # not get to take the answer back.
+    settled = _DECISIONS.get(f"{message_id}:for_the_bot") if message_id else None
+    if settled and settled[0] and not (cached and cached[0]):
+        cached = settled
+    if cached and cached[0] and message_id:
+        _cache_put(f"{message_id}:for_the_bot", cached)
+
     if cached is None:
         return Decision(False, "could not tell whether it was for the bot",
                         from_classifier=True)

@@ -604,6 +604,15 @@ check("MiniMax takes the same switch",
 
 import inspect  # noqa: E402
 
+
+class _FakeError(Exception):
+    """An error that carries a status code, like the ones the SDK raises."""
+
+    def __init__(self, status_code, message="failed"):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 check_true("the agent takes the turn shape",
            "shape" in inspect.signature(agent.get_nvidia_response_full).parameters)
 check_true("the agent loop takes the thinking switch",
@@ -628,6 +637,21 @@ check_true("the lookup check asks about sources",
            "come from a source" in presence._LOOKUP_PROMPT)
 check_true("the lookup check tells personal talk apart",
            "about themselves" in presence._LOOKUP_PROMPT)
+
+# Trying again. A turn that produced no answer is tried again, and the
+# wait is five seconds.
+from config import ANSWER_RETRY_ATTEMPTS, ANSWER_RETRY_DELAY  # noqa: E402
+
+check("the wait between the tries is five seconds", ANSWER_RETRY_DELAY, 5.0)
+check_true("the turn is tried again more than once", ANSWER_RETRY_ATTEMPTS >= 1)
+check_true("the agent asks what is worth waiting out",
+           "is_transient" in _agent_source)
+check_true("a rate limit is worth waiting out",
+           agent.is_transient(_FakeError(429, "rate limit exceeded")))
+check_true("a full service is worth waiting out",
+           agent.is_transient(_FakeError(503, "service unavailable")))
+check_true("a bad key is not worth waiting out",
+           not agent.is_transient(_FakeError(401, "invalid api key")))
 
 print()
 print("=" * 70)

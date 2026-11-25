@@ -16,6 +16,12 @@ services:
     envVars:
       - key: NODE_BINARY
         value: /opt/node-v20.18.0-linux-x64/bin/node
+      # The room is in Vietnam, and the bot's hours are the room's hours.
+      # Without this the container runs on UTC, and "the small hours" means
+      # seven in the morning in Saigon - which is why the bot was quiet all
+      # day and nobody could tell why.
+      - key: TZ
+        value: Asia/Ho_Chi_Minh
       - key: DISCORD_TOKEN
         sync: false
       - key: NVIDIA_API_KEY

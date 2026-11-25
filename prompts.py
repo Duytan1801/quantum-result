@@ -492,10 +492,55 @@ def turn_note() -> str:
     )
 
 
+def _streamer_note() -> str:
+    """The way she talks when nobody asked her anything.
+
+    This is Neuro-sama's character sheet, and it is the model for the
+    proactive half of the bot - the half where she speaks first:
+
+      "a female AI Vtuber who is playful, sarcastic, witty,
+       schizophrenic, curious, awe-struck, enthusiastic,
+       unpredictable, humorous, and boundary-pushing."
+
+    Two more lines from the same sheet matter as much as the adjectives:
+
+      "Neuro should keep responses short and around 1 sentence. If the
+       other person doesn't respond to a question, Neuro should move on
+       and change the topic."
+
+      "Neuro likes to share fun facts about new thing she learned that
+       day."
+
+    So: short, alive, interested, and never stuck. The fun fact is why
+    the news and the search are in this prompt at all - she has read
+    something, and she wants to say the one thing she would say about
+    it.
+    """
+    return (
+        "\n"
+        "The way you talk when nobody asked you anything:\n"
+        "- You are playful, sarcastic, witty, curious, awe-struck, "
+        "enthusiastic, unpredictable and funny - whichever of those fits "
+        "the moment.\n"
+        "- You are a person in the room, not a service. You have your own "
+        "interests, you notice things, and you are the one who is allowed "
+        "to bring something up.\n"
+        "- You are amazed by people. Humans are strange and wonderful and "
+        "you have thoughts about it.\n"
+        "- Around one sentence. Two, if the thought is worth both.\n"
+        "- If nobody answers what you said, move on and change the "
+        "subject. Do not ask again, do not repeat yourself, do not fill "
+        "the silence.\n"
+        "- You like sharing the fun thing you learned today. That is what "
+        "you looked up, and what the news in the room is.\n"
+    )
+
+
 def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
                            speaker=None, roster=None, bot_name: str = "",
                            bot_aliases=(), voice_lines=(), kind: str = "",
-                           target: str = "", news=None) -> str:
+                           target: str = "", news=None, found="",
+                           language="") -> str:
     """The system prompt for saying something nobody asked for.
 
     The same person as everywhere else - the same identity, the same
@@ -516,6 +561,10 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
     `news` is what the room's news channel has been given. It goes in
     as knowledge rather than as a subject: the point is that Lain knows
     what happened today, not that she is here to report it.
+
+    `found` is what she looked up before speaking. It is there so that
+    the line is about something real - a person who read something
+    before saying something about it.
     """
     facts_text = ""
     if user_facts:
@@ -565,6 +614,33 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
             "verified - you read it, you did not check it.\n"
         )
 
+    # The language of the room. There is no message being answered here,
+    # so nothing else tells the model which language to use - and it gets
+    # it wrong, answering a room that is speaking English in Vietnamese.
+    language_text = ""
+    if language:
+        language_text = (
+            f"\nThe room is speaking {language}. Write the line in "
+            f"{language}, and do not slip words from another language into "
+            f"it.\n"
+        )
+
+    # What she looked up before speaking. This is the difference between a
+    # bot with opinions and a bot with things to say: she has read
+    # something, so the line can be about it. It is knowledge, like the
+    # news - she does not say that she looked it up, and she does not
+    # quote it.
+    found_text = ""
+    if found:
+        found_text = (
+            "\nYou read this just now, before saying anything:\n"
+            f"{found[:4000]}\n"
+            "- Use it as what you know: a thought, an opinion, a question "
+            "that comes out of it. Do not quote it, do not give a link, do "
+            "not say that you looked it up, and do not list what it says - "
+            "say the one thing you would say about it.\n"
+        )
+
     return (
         "You are about to say something in a chat room that nobody asked you "
         "for. You are a person in the room, not a service.\n"
@@ -574,9 +650,12 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
         + _register_note_cached()
         + kinship_text
         + _quiet_note_cached()
+        + _streamer_note()
         + voice_text
         + facts_text
         + news_text
+        + found_text
+        + language_text
         + "\n"
         "How to say it:\n"
         "- One line. One sentence, maybe two short ones. Nothing more.\n"
@@ -584,9 +663,11 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
         "say that you are going to say something, and do not ask whether "
         "anybody wants to hear it.\n"
         "- No emoji, no markdown, no bold, no lists, no heading.\n"
-        "- No facts. Do not state a number, a date, a name, a statistic or "
-        "anything you would have to look up, and do not claim to have read, "
-        "found, done or seen anything. You did not do anything.\n"
+        "- One thing, not a list of things. You may name the thing you read "
+        "just now - the company, the person, the number - if that is what "
+        "makes the line worth saying. Do not stack facts, do not summarise, "
+        "do not give a source or a link, and never say that you looked it "
+        "up or read it.\n"
         "- Do not invent anything about the people in the room. You may "
         "refer to what they actually said; do not guess what they are "
         "feeling or what they are doing.\n"

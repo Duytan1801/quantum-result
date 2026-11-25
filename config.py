@@ -137,45 +137,86 @@ JOB_MAX_STEPS = 100          # tool-calling rounds for a background research job
 # about what you are about to believe.
 TOOL_SALT_AFTER = int(os.getenv("TOOL_SALT_AFTER", "3"))
 
+# --- Trying again ----------------------------------------------------------
+#
+# A turn that produces nothing is not an answer. The provider might be
+# rate limited, the network might drop the stream half way through, or
+# the model might spend the whole allowance thinking and say nothing.
+#
+# None of those are worth showing the room: the person who asked is still
+# waiting, and "LLM API error" in a chat room is not a reply. So the turn
+# is tried again, five seconds later.
+#
+# There are two kinds of failure, and they are treated differently.
+#
+# The first is the provider saying "not now": a 429 because too many
+# people are asking at once, a 503 because the service is full, a dropped
+# connection. Those clear on their own - a rate limit is a matter of
+# seconds, and a busy service is a matter of a minute - so the turn keeps
+# trying, five seconds apart, for as long as it takes. A bad key or a
+# model that does not exist is not one of these, and waiting does not help
+# with that, so it is given up on at once.
+#
+# The second is a turn that got no answer out of the model itself: it
+# said nothing, or it used the whole budget thinking. That is tried again
+# a few times, because a model that says nothing usually says something
+# the next time, but it is not tried for ever.
+ANSWER_RETRY_DELAY = float(os.getenv("ANSWER_RETRY_DELAY", "5"))
+ANSWER_RETRY_ATTEMPTS = int(os.getenv("ANSWER_RETRY_ATTEMPTS", "3"))
+
+# How long the turn keeps waiting out a provider that says "not now".
+# Zero means for as long as it takes, which is what it does by default.
+ANSWER_RETRY_MAX_WAIT = float(os.getenv("ANSWER_RETRY_MAX_WAIT", "0"))
+
 # --- Proactive talking ----------------------------------------------------
 #
 # The bot answers when it is spoken to. This is the other half: saying
-# something when nobody asked, once in a while, the way a person in a
-# room does - and, much more often, not saying anything.
+# something when nobody asked - the way a person in a room does.
 #
-# These numbers are the restraint. A proactive bot that talks too often
-# is a pest, and no amount of good writing fixes that, so the defaults
-# are conservative: hours between unprompted messages, a cap of a few a
-# day, and nothing at all in the small hours.
+# The model for this is Neuro-sama, and the number that matters is hers:
+# PATIENCE, sixty seconds of silence, and then the prompt asks the model
+# to say something. That is the whole trick. Not a schedule, not a daily
+# allowance - a short attention span and something to say.
 #
-# The gap grows when nobody answers. A bot that keeps talking into a
-# silence is the worst kind of bot, so each ignored message makes the
-# next one wait twice as long, up to a day.
+# So there is no cap on how much the bot talks and no quiet window. It
+# checks every minute, and the small model decides whether there is
+# anything worth saying; most of the time there is not, and the bot is
+# quiet. When there is, it says one line.
+#
+# The one thing that still holds is the backoff: a message nobody
+# answered makes the next one wait longer, because a bot that keeps
+# talking into a silence is the worst kind of bot.
 
 PROACTIVE_ENABLED = (os.getenv("PROACTIVE_ENABLED", "1").strip().lower()
                      not in ("0", "false", "no"))
 
 # How often the bot looks for a moment to speak. This is a check, not a
 # schedule: most of these checks end in silence.
-PROACTIVE_TICK_SECONDS = int(os.getenv("PROACTIVE_TICK_SECONDS", "600"))
+PROACTIVE_TICK_SECONDS = int(os.getenv("PROACTIVE_TICK_SECONDS", "60"))
 
-# The shortest gap between two unprompted messages in one channel.
-PROACTIVE_MIN_GAP_MINUTES = int(os.getenv("PROACTIVE_MIN_GAP_MINUTES", "240"))
+# The shortest gap between two unprompted messages in one channel. It is
+# short - two ticks cannot land on top of each other - and it grows when
+# the messages go unanswered.
+PROACTIVE_MIN_GAP_MINUTES = int(os.getenv("PROACTIVE_MIN_GAP_MINUTES", "2"))
 
-# The most unprompted messages in one channel in one day.
-PROACTIVE_MAX_PER_DAY = int(os.getenv("PROACTIVE_MAX_PER_DAY", "3"))
+# The most unprompted messages in one channel in one day. Zero means no
+# limit at all, which is what it is: the model decides whether to speak,
+# not a counter.
+PROACTIVE_MAX_PER_DAY = int(os.getenv("PROACTIVE_MAX_PER_DAY", "0"))
 
 # The room has to have been quiet for at least this long before the bot
 # considers joining in - otherwise it is talking over a live conversation.
-PROACTIVE_MIN_IDLE_SECONDS = int(os.getenv("PROACTIVE_MIN_IDLE_SECONDS", "1200"))
+# A minute of silence is the number Neuro-sama uses.
+PROACTIVE_MIN_IDLE_SECONDS = int(os.getenv("PROACTIVE_MIN_IDLE_SECONDS", "60"))
 
 # ...and not for longer than this, or the room is simply dead and the
 # bot would be talking to nobody.
 PROACTIVE_MAX_IDLE_MINUTES = int(os.getenv("PROACTIVE_MAX_IDLE_MINUTES", "1440"))
 
 # The hours of the day when the bot does not start anything. "0-7" is
-# from midnight to seven; "22-3" wraps around midnight.
-PROACTIVE_QUIET_HOURS = os.getenv("PROACTIVE_QUIET_HOURS", "0-7")
+# from midnight to seven; "22-3" wraps around midnight. Empty means no
+# quiet hours at all: the bot talks whenever it has something to say.
+PROACTIVE_QUIET_HOURS = os.getenv("PROACTIVE_QUIET_HOURS", "")
 
 # How long after an unprompted message the bot still treats the next
 # human message as a reply to it.
