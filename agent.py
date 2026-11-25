@@ -14,6 +14,7 @@ from config import (
     HISTORY_ROWS,
     MAX_AGENT_STEPS,
     NVIDIA_MODEL,
+    TOOL_SALT_AFTER,
     extra_body_for,
     provider_chain,
     vision_models,
@@ -136,6 +137,53 @@ TOOL_RETRY_NOTE = (
     "in their language, in the tone of the conversation you are already in - "
     "not to this note - and do not mention the search, the tools, or that you "
     "checked anything."
+)
+
+
+# The salt.
+#
+# When a turn has used tools several times in a row, two things go wrong
+# often enough to be worth interrupting for.
+#
+# The first is the loop: the same tool with the same arguments, or the
+# same question asked a different way, returning the same thing over and
+# over while the person waits. It looks like research and it is a stall.
+#
+# The second is poisoning. Every tool result is written into the
+# conversation, so a turn that keeps calling tools keeps filling the
+# history with output that the *next* turn reads as though it were
+# established fact. A page that was wrong, out of date, or about something
+# else entirely becomes a remembered fact, and the model cannot tell the
+# difference because by then it is just text in its context.
+#
+# So the paragraph below goes in front of the model once the turn has used
+# tools more than a few times in a row. It is not a rule about tool use -
+# it is a check, and it asks the two questions that matter: are you
+# repeating yourself, and what are you about to believe?
+#
+# It is added as a user-role message because that is where the other
+# in-loop notes go, and every provider in the chain is known to accept a
+# message in that position. It is never written to the conversation
+# history - it is a steering instruction, not part of the conversation.
+TOOL_SALT = (
+    "STOP AND CHECK BEFORE YOU CALL ANOTHER TOOL. This turn has now used "
+    "tools {count} times in a row, and that is where turns go wrong.\n\n"
+    "Are you repeating yourself? The same tool with the same arguments, or "
+    "the same question phrased a different way, brings back the same thing. "
+    "A loop that looks like research is really a stall, and the person is "
+    "waiting. If the results above already answer what you are asking, use "
+    "them.\n\n"
+    "What are you about to believe? A tool's output is what a source said, "
+    "not what is true. It may be wrong, out of date, or about something else "
+    "entirely. If it contradicts what you already knew, check it rather "
+    "than letting it overwrite what you knew - and if you cannot check it, "
+    "say that in the answer instead of stating it as fact. Do not write a "
+    "tool's output down as something you established.\n\n"
+    "Do you have enough to answer? They asked you something. They are "
+    "waiting for an answer, not for a bibliography. If what you have would "
+    "let you answer, answer now. Call another tool only if it will bring "
+    "something the earlier ones did not - and do not walk them through each "
+    "search you did."
 )
 
 
@@ -811,6 +859,11 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     # after answering from memory. It is asked once: a second ask costs
     # another full round of thinking for very little gain.
     nudged = 0
+    # How many tool-calling rounds this turn has run in a row, and whether
+    # the self-check has already gone in. The count is what triggers the
+    # salt; the flag keeps it from being added twice.
+    tool_rounds = 0
+    salted = False
     # Whether the next step has to call a tool. The model is told to, and
     # the step is not allowed to end without one.
     force_tool = False
@@ -924,6 +977,10 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
             }
 
         if tool_calls_accum:
+            # This round used tools. The run of them is what the self-check
+            # counts, so it goes up here and comes back down when a round
+            # ends without a tool call.
+            tool_rounds += 1
             tool_calls_list = [
                 {
                     "id": tc["id"],
@@ -949,6 +1006,7 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
         else:
             # No tool calls: this is the real answer. Discard any preamble
             # collected during earlier tool-calling steps.
+            tool_rounds = 0
             if finish_reason == "length":
                 # The answer was cut off by the token limit and will be
                 # continued, so append rather than replace - otherwise the
@@ -1148,6 +1206,25 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                 step_failed = True
 
         tool_calls_accum.clear()
+
+        # The salt. After a few tool rounds in a row the model is asked to
+        # check itself, because that is where the loop starts and where
+        # the output starts being taken for fact.
+        #
+        # It goes in here, after the tool results, rather than before the
+        # call: the API needs the assistant turn that asked for the tools
+        # to be followed by their results, and a message in between is a
+        # rejected request. It goes in before the "the tools are broken"
+        # note so that, when the tools really are broken, that note is
+        # the last thing the model reads - it is the one that matters.
+        if tool_rounds > TOOL_SALT_AFTER and not salted:
+            salted = True
+            messages.append({
+                "role": "user",
+                "content": TOOL_SALT.format(count=tool_rounds),
+            })
+            logger.info(f"the turn has used tools {tool_rounds} times in a "
+                        f"row - asking the model to check itself")
 
         if step_failed:
             failed_count += 1

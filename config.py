@@ -113,6 +113,24 @@ supabase: Client = create_client(_supabase_url, _supabase_key)
 MAX_AGENT_STEPS = 100        # tool-calling rounds for an interactive reply
 JOB_MAX_STEPS = 100          # tool-calling rounds for a background research job
 
+# How many tool-calling rounds in a row are fine before the model is asked
+# to check itself.
+#
+# A turn that uses one or two tools is normal work. A turn that uses five
+# in a row is usually one of two things: a loop - the same search, or the
+# same question asked a different way - or a model that has stopped
+# reading what came back and is gathering instead of thinking.
+#
+# Both are worth interrupting. The tool results are stored in the
+# conversation, so a turn that keeps calling tools also keeps filling the
+# history with output that a later turn will read as though it were
+# established fact. That is how a bad page becomes a remembered fact.
+#
+# So after this many consecutive tool rounds, a paragraph goes in front of
+# the model: stop, check whether you are repeating yourself, and be careful
+# about what you are about to believe.
+TOOL_SALT_AFTER = int(os.getenv("TOOL_SALT_AFTER", "3"))
+
 # How many conversation rows to pull from the database. The whole conversation
 # is kept and compacted when it gets large, rather than being truncated.
 HISTORY_ROWS = 300

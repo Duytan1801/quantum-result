@@ -386,6 +386,35 @@ check_true("the agent takes the write scopes",
 check_true("the memory update uses the write scopes",
            "scopes=write_scopes" in inspect.getsource(agent.get_nvidia_response_full))
 
+# The salt. A turn that uses tools several times in a row is either a
+# loop or a model that has stopped reading what came back, and the tool
+# output it is collecting ends up in the history as though it were fact.
+from config import TOOL_SALT_AFTER  # noqa: E402
+
+check("the salt goes in after a few tool rounds", TOOL_SALT_AFTER, 3)
+check_true("the salt asks whether the model is repeating itself",
+           "Are you repeating yourself?" in agent.TOOL_SALT)
+check_true("the salt asks what the model is about to believe",
+           "What are you about to believe?" in agent.TOOL_SALT)
+check_true("the salt says a tool's output is not fact",
+           "not what is true" in agent.TOOL_SALT)
+check_true("the salt tells the model to answer",
+           "answer now" in agent.TOOL_SALT)
+check_true("the salt is not written to the history",
+           "db_add_message" not in agent.TOOL_SALT)
+check_true("the loop counts the tool rounds",
+           "tool_rounds" in inspect.getsource(agent.run_agent_loop))
+
+# The salt has to go in after the tool results, not before. The API needs
+# the assistant turn that asked for the tools to be followed by their
+# results, and a message in between is a rejected request.
+_loop_source = inspect.getsource(agent.run_agent_loop)
+_tool_result_at = _loop_source.find('"role": "tool"')
+_salt_at = _loop_source.find("TOOL_SALT.format(count=tool_rounds)")
+check_true("the salt goes in after the tool results",
+           _tool_result_at != -1 and _salt_at != -1
+           and _salt_at > _tool_result_at)
+
 print()
 print("=" * 70)
 print("THE PRESENCE DECISION")
