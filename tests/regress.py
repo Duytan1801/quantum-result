@@ -81,12 +81,14 @@ print("=" * 70)
 print("THE PROVIDER CHAIN")
 print("=" * 70)
 
-from config import provider_chain, vision_models, BOLT_MODEL  # noqa: E402
+from config import provider_chain, vision_models, BOLT_MODEL, STEP5_MODEL  # noqa: E402
+from config import NVIDIA_MODEL  # noqa: E402
 
 check("the chain is Nemotron, MiniMax",
       [n for n, _, _ in provider_chain()], ["NVIDIA", "MiniMax"])
-check("the vision chain is Nemotron",
-      [n for n, _, _ in vision_models()], ["NVIDIA"])
+check("the vision chain is Nemotron, then Step-5",
+      [m for _, _, m in vision_models()],
+      [NVIDIA_MODEL, STEP5_MODEL])
 
 # The answer and the scan are two different models on purpose: Nemotron
 # answers, Bolt reads the room. If they were the same, the bot would

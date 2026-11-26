@@ -58,6 +58,7 @@ import os
 import time
 from dataclasses import dataclass
 
+import modelcall
 from people import (addresses_bot, mentioned, name_collisions, names_in,
                     replies_to_bot)
 
@@ -449,7 +450,7 @@ async def classify_reply(text: str, *, author_name: str, roster_line: str,
     provider's opinion.
     """
     try:
-        from config import extra_body_for, nvidia_client
+        from config import nvidia_client
 
         models = scanner_models()
     except Exception as exc:
@@ -482,14 +483,11 @@ async def classify_reply(text: str, *, author_name: str, roster_line: str,
         waited = False
         while True:
             try:
-                resp = await nvidia_client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0,
-                    max_completion_tokens=tokens,
-                    extra_body=extra_body_for("BOLT", thinking=False),
-                )
-                content = (resp.choices[0].message.content or "").strip()
+                content = await modelcall.complete(
+                    nvidia_client, model,
+                    [{"role": "user", "content": prompt}],
+                    provider="BOLT", thinking=False, temperature=0,
+                    max_tokens=tokens)
             except Exception as exc:
                 if _rate_limited(exc):
                     # Busy, not broken: wait and ask again, for as long as
@@ -561,7 +559,7 @@ async def needs_lookup(text: str) -> bool:
     if not (text or "").strip():
         return False
     try:
-        from config import extra_body_for, nvidia_client
+        from config import nvidia_client
 
         models = scanner_models()
     except Exception as exc:
@@ -576,14 +574,11 @@ async def needs_lookup(text: str) -> bool:
         waited = False
         while True:
             try:
-                resp = await nvidia_client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0,
-                    max_completion_tokens=4,
-                    extra_body=extra_body_for("BOLT", thinking=False),
-                )
-                content = (resp.choices[0].message.content or "").strip().upper()
+                content = (await modelcall.complete(
+                    nvidia_client, model,
+                    [{"role": "user", "content": prompt}],
+                    provider="BOLT", thinking=False, temperature=0,
+                    max_tokens=4) or "").strip().upper()
             except Exception as exc:
                 if _rate_limited(exc):
                     # Busy, not broken: wait and ask again, for as long as

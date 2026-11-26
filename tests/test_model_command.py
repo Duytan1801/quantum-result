@@ -69,7 +69,7 @@ async def run_tests():
     print("=" * 70)
 
     check("every model has a name to show",
-          sorted(MODEL_LABELS), sorted(set(MODEL_CHOICES) - {"nemotron"}))
+          sorted(MODEL_LABELS), sorted(set(MODEL_CHOICES) - {"nemotron", "step"}))
     check_true("super is the strong one",
                "super" in MODEL_CHOICES and "super" in MODEL_LABELS)
     check_true("minimax is on offer",

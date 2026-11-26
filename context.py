@@ -15,9 +15,9 @@ from difflib import SequenceMatcher
 from config import (
     CONTEXT_CHAR_BUDGET,
     KEEP_RECENT_CHARS,
-    extra_body_for,
     provider_chain,
 )
+import modelcall
 
 
 # --- History sanitising ----------------------------------------------------
@@ -357,13 +357,9 @@ async def summarize_messages(messages: list) -> str:
         # than they allow is refused outright.
         budget = 32768 if _name == "Groq" else 131072
         try:
-            response = await client.chat.completions.create(
-                model=model,
-                max_completion_tokens=budget,
-                extra_body=extra_body_for(_name),
-                **request,
-            )
-            content = (response.choices[0].message.content or "").strip()
+            content = await modelcall.complete(
+                client, model, request["messages"], provider=_name,
+                max_tokens=budget, temperature=request.get("temperature", 0.2))
             if content:
                 return content
             last_error = "empty summary"

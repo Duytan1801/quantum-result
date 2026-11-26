@@ -116,6 +116,7 @@ def needs_fresh_data(message: str) -> bool:
 # presence scanner decide the same way. It is imported here under the
 # name the rest of the agent uses.
 from failures import is_transient  # noqa: E402,F401
+import modelcall  # noqa: E402
 
 
 FRESHNESS_REMINDER = (
@@ -697,14 +698,9 @@ async def _fresh_answer(messages: list, max_tokens: int) -> str:
     request = trim_context(request)
     for _name, client, model in provider_chain():
         try:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=request,
-                temperature=0.7,
-                max_completion_tokens=max_tokens,
-                extra_body=extra_body_for(_name),
-            )
-            content = (response.choices[0].message.content or "").strip()
+            content = await modelcall.complete(
+                client, model, request, provider=_name,
+                temperature=0.7, max_tokens=max_tokens)
             if content:
                 return content
         except Exception as exc:
@@ -741,14 +737,9 @@ async def _voice_answer(messages: list, max_tokens: int, problem: str,
     request = trim_context(request)
     for _name, client, model in provider_chain():
         try:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=request,
-                temperature=0.5,
-                max_completion_tokens=max_tokens,
-                extra_body=extra_body_for(_name),
-            )
-            content = (response.choices[0].message.content or "").strip()
+            content = await modelcall.complete(
+                client, model, request, provider=_name,
+                temperature=0.5, max_tokens=max_tokens)
             if content:
                 return content
         except Exception as exc:
@@ -777,14 +768,9 @@ async def _summarise_at_limit(messages: list, max_tokens: int) -> str:
     last_error = None
     for _name, client, model in provider_chain():
         try:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=request,
-                temperature=0.4,
-                max_completion_tokens=max_tokens,
-                extra_body=extra_body_for(_name),
-            )
-            content = (response.choices[0].message.content or "").strip()
+            content = await modelcall.complete(
+                client, model, request, provider=_name,
+                temperature=0.4, max_tokens=max_tokens)
             if content:
                 return content
             last_error = "empty summary"
@@ -832,16 +818,23 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     # A turn that carries a picture needs a model that can see one. MiniMax
     # cannot, so those turns go straight to Nemotron, which can; everything
     # else starts with Nemotron too.
-    chain = (vision_models() if _has_image(messages)
-             else provider_chain())
+    has_image = _has_image(messages)
+    chain = (vision_models() if has_image else provider_chain())
 
     # A model chosen for this room goes first. A turn with a picture keeps
     # the vision chain: the chosen model may not be able to see one, and
-    # the picture is the point of that turn.
-    if preferred_model and not _has_image(messages):
-        from config import chain_with_model
+    # the picture is the point of that turn - unless the model chosen is
+    # one of the vision models, which then leads that chain.
+    if preferred_model:
+        from config import chain_with_model, provider_for_model
 
-        chain = chain_with_model(preferred_model)
+        if not has_image:
+            chain = chain_with_model(preferred_model)
+        else:
+            entry = provider_for_model(preferred_model)
+            vision_ids = [e[2] for e in vision_models()]
+            if entry is not None and entry[2] in vision_ids:
+                chain = chain_with_model(preferred_model, chain)
 
     # The request as it was before this turn started, and the answers the
     # model has already given in this conversation. The finished answer is
@@ -890,6 +883,10 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     # Whether the next step has to call a tool. The model is told to, and
     # the step is not allowed to end without one.
     force_tool = False
+    # The models that finished a step without saying anything. A model
+    # that has gone quiet is asked last, so the next attempt is made to a
+    # different one.
+    silent_models: set[str] = set()
     # How many times this turn has been tried again because it produced
     # nothing: no model would answer, the stream died half way, or the
     # model said nothing at all. The person who asked is still waiting,
@@ -1140,12 +1137,25 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
                 # chat room is not a reply to anybody - so the turn is
                 # asked again after a wait, with the message put back in
                 # front of it.
+                #
+                # Some models reason first and finish the turn without
+                # answering: the reasoning comes back, the answer does
+                # not, and the stop reason is an ordinary end-of-turn.
+                # The request succeeded, so nothing complains - the only
+                # way to notice is to look. A model that has just done
+                # that is moved to the back of the chain, because the
+                # same empty answer comes back the same way, and the
+                # next attempt asks a different model.
+                silent_models.add(used_model)
+                chain = ([e for e in chain if e[2] not in silent_models]
+                         + [e for e in chain if e[2] in silent_models])
                 if no_answer_attempts < ANSWER_RETRY_ATTEMPTS:
                     no_answer_attempts += 1
                     logger.warning(f"the model produced no answer, retrying "
                                    f"in {ANSWER_RETRY_DELAY}s")
                     await asyncio.sleep(ANSWER_RETRY_DELAY)
-                    nudge = "You produced no answer. Say it now."
+                    nudge = ("You produced no answer. Say it now - do not "
+                             "think it through again.")
                     if original_request:
                         nudge += (
                             "\n\nThe message to answer is this one, and no "

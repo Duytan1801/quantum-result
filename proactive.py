@@ -80,10 +80,10 @@ from config import (
     PROACTIVE_MIN_IDLE_SECONDS,
     PROACTIVE_QUIET_HOURS,
     PROACTIVE_REPLY_WINDOW_MINUTES,
-    extra_body_for,
     is_detached,
     nvidia_client,
 )
+import modelcall
 
 # The kinds of thing worth saying, and only these. A fixed set is what
 # makes the bot's unprompted voice predictable - people judged a static
@@ -429,20 +429,11 @@ async def _complete(model: str, messages, max_tokens: int = 200,
                     thinking: bool = False) -> str:
     """One completion from one NVIDIA model, or nothing."""
     try:
-        response = await nvidia_client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.4,
-            max_completion_tokens=max_tokens,
-            top_p=0.95,
-            extra_body=extra_body_for("NVIDIA", thinking=thinking),
-        )
+        return await modelcall.complete(
+            nvidia_client, model, messages, provider="NVIDIA",
+            thinking=thinking, temperature=0.4, max_tokens=max_tokens)
     except Exception as exc:
         print(f"proactive: {model} failed: {str(exc)[:120]}")
-        return ""
-    try:
-        return response.choices[0].message.content or ""
-    except Exception:
         return ""
 
 
@@ -682,18 +673,12 @@ async def write_line(*, kind: str, target: str, bot_name: str,
 
     for _name, client, chosen in chain:
         try:
-            response = await client.chat.completions.create(
-                model=chosen,
-                messages=messages,
-                temperature=0.8,
-                max_completion_tokens=300,
-                top_p=0.95,
-                extra_body=extra_body_for(_name, thinking=False),
-            )
+            text = await modelcall.complete(
+                client, chosen, messages, provider=_name, thinking=False,
+                temperature=0.8, max_tokens=300)
         except Exception as exc:
             print(f"proactive: {chosen} failed: {str(exc)[:120]}")
             continue
-        text = (response.choices[0].message.content or "").strip()
         text = _clean_generated(text, bot_name)
         if text:
             return text

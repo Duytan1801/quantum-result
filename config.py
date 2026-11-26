@@ -62,6 +62,17 @@ def _require(*names: str) -> None:
 MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "minimaxai/minimax-m3.1-flash")
 NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3.5-super-vl-120b-a12b")
 BOLT_MODEL = os.getenv("BOLT_MODEL", "nvidia/nemotron-3.5-bolt-e4b")
+
+# A second model that can look at a picture, served from the same
+# endpoint. It is here for two reasons: it is a different model, so
+# there is a second pair of eyes when Nemotron's endpoint is busy or
+# its model is down, and it can be chosen for a room with !model.
+#
+# It takes the same picture format as Nemotron - a base64 data URL in
+# an "image_url" part - and the same request shape the agent uses:
+# max_completion_tokens, streaming, and tool calling were all checked
+# against the live endpoint.
+STEP5_MODEL = os.getenv("STEP5_MODEL", "stepfun-ai/step-5-preview")
 NVIDIA_API_URL = os.getenv("NVIDIA_API_URL", "https://integrate.api.nvidia.com/v1")
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 
@@ -334,8 +345,14 @@ def vision_models() -> list[tuple[str, AsyncOpenAI, str]]:
     MiniMax cannot look at images, so a turn with an attachment goes
     straight to Nemotron, which can. Groq's llama-3.3 is text only, so
     it is no use here either.
+
+    Step-5 comes second. Nemotron is the stronger of the two and goes
+    first, but it is also the one the whole answering chain depends on,
+    so having a second model that can look at a picture behind it means
+    a picture in a message is answered even when Nemotron is down.
     """
-    return [("NVIDIA", nvidia_client, NVIDIA_MODEL)]
+    return [("NVIDIA", nvidia_client, NVIDIA_MODEL),
+            ("NVIDIA", nvidia_client, STEP5_MODEL)]
 
 
 # The models that can be chosen with !model, and the names they are
@@ -347,6 +364,8 @@ MODEL_CHOICES = {
     "minimax": MINIMAX_MODEL,
     "groq": GROQ_MODEL,
     "bolt": BOLT_MODEL,
+    "step5": STEP5_MODEL,
+    "step": STEP5_MODEL,
 }
 
 # What the names in MODEL_CHOICES are called, for the help text.
@@ -355,6 +374,7 @@ MODEL_LABELS = {
     "minimax": "MiniMax M3.1 Flash - quick, but rate-limited to a few a minute",
     "groq": "Groq Llama 3.3 70B - the fallback provider",
     "bolt": "Nemotron 3.5 Bolt E4B - small and fast, for short answers",
+    "step5": "Step-5 Preview - looks at pictures, and can answer as well",
 }
 
 
@@ -379,14 +399,21 @@ def provider_for_model(model_id: str):
             return entry
     if model_id == BOLT_MODEL:
         return ("NVIDIA", nvidia_client, BOLT_MODEL)
+    if model_id == STEP5_MODEL:
+        return ("NVIDIA", nvidia_client, STEP5_MODEL)
     if model_id == GROQ_MODEL and groq_client is not None:
         return ("Groq", groq_client, GROQ_MODEL)
     return None
 
 
-def chain_with_model(model_id: str):
-    """The answering chain, with a chosen model moved to the front."""
-    chain = provider_chain()
+def chain_with_model(model_id: str, chain=None):
+    """The answering chain, with a chosen model moved to the front.
+
+    `chain` is the chain to reorder. It defaults to the answering chain,
+    but the vision chain can be given instead - a turn with a picture
+    can only be led by a model that can see one.
+    """
+    chain = list(chain) if chain is not None else provider_chain()
     entry = provider_for_model(model_id)
     if entry is None:
         return chain
