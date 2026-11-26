@@ -77,6 +77,10 @@ SHARED_CHANNELS: dict[str, bool] = {}
 # than once, and two ticks would talk over each other.
 TICK_TASK: asyncio.Task | None = None
 
+# What happened when the bot logged in. The tick is the quietest part of
+# the bot, so the outside view of it has to say whether it even started.
+READY: dict = {"called": False, "at": 0.0, "error": ""}
+
 # Who is in each channel, read from the channel's own messages. Nobody is
 # listed in the code: the bot learns the room from the room.
 ROSTERS: dict[str, list] = {}
@@ -356,10 +360,15 @@ def proactive_status():
     except Exception as exc:
         out.append(f"quiet hours check failed: {exc}")
 
-    out.append(f"tick task: {'running' if TICK_TASK and not TICK_TASK.done() else 'NOT RUNNING'}")
+    out.append(f"tick task: {_tick_state()}")
+    out.append(f"on_ready: called={READY.get('called')} at="
+               f"{time.strftime('%H:%M:%S', time.localtime(READY['at'])) if READY.get('at') else '-'}"
+               f" error={READY.get('error') or 'none'}")
     out.append(f"rooms known in memory: {list(SHARED_CHANNELS.keys()) or 'none'}")
 
     try:
+        from storage import db_list_chat_channels
+
         channels = asyncio.run(db_list_chat_channels())
     except Exception as exc:
         channels = []
@@ -624,7 +633,7 @@ async def proactive_cmd(ctx):
                    f"quiet hours: {PROACTIVE_QUIET_HOURS or 'none'}")
     except Exception as exc:
         out.append(f"settings: FAILED ({exc})")
-    out.append(f"tick task: {'running' if TICK_TASK and not TICK_TASK.done() else 'NOT RUNNING'}")
+    out.append(f"tick task: {_tick_state()}")
     out.append(f"local time: {time.strftime('%H:%M:%S %Z', time.localtime())}")
     now = time.time()
     state = state_for(str(ctx.channel.id))
@@ -804,6 +813,19 @@ async def _tick_once():
             print(f"proactive: could not speak in {cid}: {exc}")
 
 
+def _tick_state() -> str:
+    """Is the proactive tick running, and if not, why not."""
+    task = TICK_TASK
+    if task is None:
+        return "never started"
+    if not task.done():
+        return "running"
+    if task.cancelled():
+        return "cancelled"
+    error = task.exception()
+    return f"finished, and it died: {error!r}" if error else "finished"
+
+
 def _start_tick():
     """Start the proactive tick, once.
 
@@ -843,7 +865,20 @@ def _start_tick():
 
 @bot.event
 async def on_ready():
+    global READY
+
+    READY["called"] = True
+    READY["at"] = time.time()
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+
+    # The tick starts first, before anything else in here. It is the
+    # quietest part of the bot, and everything below it is a report - a
+    # report that fails must not be able to stop the bot from talking.
+    try:
+        _start_tick()
+    except Exception as exc:
+        READY["error"] = f"the tick did not start: {exc}"
+        traceback.print_exc()
 
     # Say whether the proper math renderer is in use. If Node is missing the
     # bot tries to install it at runtime; if that fails too, it falls back to
@@ -909,10 +944,6 @@ async def on_ready():
     # The tick itself lives at module level, so it can be tested without a
     # Discord connection - and so that it is not rebuilt every time
     # on_ready fires.
-
-    # Start the proactive tick. It runs in the background while the bot
-    # stays responsive. If it is disabled, it simply does nothing.
-    _start_tick()
 
 
 @bot.event
