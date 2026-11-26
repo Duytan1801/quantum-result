@@ -122,6 +122,15 @@ async def main():
     check("quiet is quiet",
           proactive._parse_moment("QUIET the room is busy"), ("", "", ""))
 
+    # The same remark twice is not a remark.
+    said = [("the bot", "cơ chế salt ổn thật."), ("Damian", "ok")]
+    check_true("the same line is a repeat",
+               proactive.repeats("cơ chế salt ổn thật.", said))
+    check_true("the same thought in other words is a repeat",
+               proactive.repeats("cơ chế salt ổn thật đó", said))
+    check_true("a different line is not a repeat",
+               not proactive.repeats("tidal xóa hết bài ai rồi", said))
+
     print()
     print("=" * 70)
     print("THE ANSWER DECISION")

@@ -544,7 +544,7 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
                            speaker=None, roster=None, bot_name: str = "",
                            bot_aliases=(), voice_lines=(), kind: str = "",
                            target: str = "", news=None, found="",
-                           language="") -> str:
+                           language="", said_before=()) -> str:
     """The system prompt for saying something nobody asked for.
 
     The same person as everywhere else - the same identity, the same
@@ -618,6 +618,21 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
             "verified - you read it, you did not check it.\n"
         )
 
+    # What she has already said in this room. If nobody answered it, the
+    # rule is to move on - so she is told what she said, and told that
+    # saying it again is not saying something new.
+    said_text = ""
+    if said_before:
+        lines = [f"- {str(s).strip()[:180]}" for s in said_before if str(s).strip()]
+        if lines:
+            said_text = (
+                "\nYou have already said these in this room:\n"
+                + "\n".join(lines)
+                + "\n- If nobody answered, move on and change the subject. "
+                "Do not repeat these, and do not say the same thing about "
+                "the same thing in different words.\n"
+            )
+
     # The language of the room. There is no message being answered here,
     # so nothing else tells the model which language to use - and it gets
     # it wrong, answering a room that is speaking English in Vietnamese.
@@ -670,6 +685,7 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
         + facts_text
         + news_text
         + found_text
+        + said_text
         + "\n"
         "How to say it:\n"
         "- One line. One sentence, maybe two short ones. Nothing more.\n"

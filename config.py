@@ -1,12 +1,24 @@
 """Environment configuration and shared clients."""
 
 import os
+import time
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from supabase import Client, create_client
 
 load_dotenv()
+
+
+# The room is in Vietnam, and every hour the bot reasons about - quiet
+# hours, the day it is on, what time it is - has to be the room's hours.
+#
+# This is set here rather than left to the platform. The container ran in
+# UTC with TZ unset, even with the variable written out in render.yaml:
+# the env vars in the blueprint never reached it. A bot whose clock is
+# seven hours out is a bot whose quiet hours are the wrong hours.
+os.environ["TZ"] = os.getenv("ROOM_TIMEZONE", "Asia/Ho_Chi_Minh")
+time.tzset()
 
 
 def _require(*names: str) -> None:

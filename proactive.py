@@ -328,6 +328,8 @@ If there is news in the context above, it is news the room may not have talked a
 
 If you want to say something about a specific fact, a number, a name or anything current, put it in the last part as a search query - it gets looked up before you speak, so you can talk about something real. Do not put a link or a headline in the thing you want to say.
 
+The lines under "What you already said" are yours. If nobody answered them, do not repeat them and do not pick the same subject again - move on and change the topic, or say something about today's news instead. A different remark about the same thing is still the same remark.
+
 Answer on one line, in exactly this form:
 SPEAK <kind> | <the thing you want to say, in a few words> | <what to look up>
 QUIET <why not>
@@ -459,6 +461,18 @@ def _context_text(*, channel_name: str, people: str, lines, now: float,
         body.append(f"The room has been quiet for {int(idle_minutes)} minutes.")
     if recent:
         body.append(f"The last thing said: \"{recent[-1][1][:180]}\"")
+
+    # What the bot has already said in this room. It is listed apart from
+    # the rest, because the rule is simple: if nobody answered it, say
+    # something else. A bot that keeps returning to the same remark every
+    # two minutes is not a person, it is a stuck record.
+    said_before = [said for who, said in recent if who == "the bot"]
+    if said_before:
+        body.append("")
+        body.append("What you already said in this room (do not say it again):")
+        for said in said_before[-3:]:
+            body.append(f"- {said[:180]}")
+
     body.append("What has been said, oldest first:")
     for who, said in recent:
         body.append(f"- {who}: {said[:180]}")
@@ -489,7 +503,8 @@ def _context_text(*, channel_name: str, people: str, lines, now: float,
 async def write_line(*, kind: str, target: str, bot_name: str,
                      bot_aliases=(), roster=None, speaker=None,
                      user_facts: dict | None = None, voice_lines=(),
-                     history=(), news=None, found="", language="") -> str:
+                     history=(), news=None, found="", language="",
+                     said_before=()) -> str:
     """The sentence itself, in the room's voice."""
     from prompts import build_proactive_prompt
 
@@ -505,6 +520,7 @@ async def write_line(*, kind: str, target: str, bot_name: str,
         news=news,
         found=found,
         language=language,
+        said_before=list(said_before or [])[-3:],
     )
     messages = [{"role": "system", "content": system}]
     messages.extend(list(history or [])[-12:])
@@ -618,6 +634,35 @@ def clean_line(text: str) -> str:
     return sanitize_reply(text or "").strip()
 
 
+def _words(text: str) -> set:
+    return set(re.findall(r"\w+", (text or "").lower()))
+
+
+def repeats(text: str, lines, threshold: float = 0.8) -> bool:
+    """Is this line the same thing as one the bot already said?
+
+    The rule is the Neuro one: if nobody answered what you said, move
+    on and change the subject. A bot that says the same sentence every
+    two minutes is not talking, it is stuck - and it reads worse than
+    saying nothing at all.
+    """
+    new = _words(text)
+    if not new:
+        return False
+    for who, said in lines or ():
+        if who != "the bot":
+            continue
+        old = _words(said)
+        if not old:
+            continue
+        # How much of the new line was already in the old one. Containment
+        # rather than overlap: a longer old line that contains the new
+        # one is still the same remark.
+        if len(new & old) / len(new) >= threshold:
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # The whole thing
 # ---------------------------------------------------------------------------
@@ -664,6 +709,7 @@ async def speak_once(*, channel_id: str, channel, bot, bot_name: str,
     human = [{"role": "user", "content": said}
              for who, said in lines if who != "the bot"]
     voice_lines = voice_examples(human, limit=3)
+    said_before = [said for who, said in lines if who == "the bot"]
     text = await write_line(
         kind=kind,
         target=target,
@@ -674,6 +720,7 @@ async def speak_once(*, channel_id: str, channel, bot, bot_name: str,
         news=news,
         found=found,
         language=_language(lines),
+        said_before=said_before,
     )
     if not text:
         print(f"proactive: no line came back in {channel_id}")
@@ -682,6 +729,13 @@ async def speak_once(*, channel_id: str, channel, bot, bot_name: str,
     ok, why = check_line(text)
     if not ok:
         print(f"proactive: dropping the line in {channel_id} - {why}")
+        return ""
+
+    # The same remark twice is not a remark. If the model ignored the
+    # instruction to move on, the line is dropped rather than posted.
+    if repeats(text, lines):
+        print(f"proactive: dropping the line in {channel_id} - it repeats "
+              f"what was already said")
         return ""
 
     line = clean_line(text)
