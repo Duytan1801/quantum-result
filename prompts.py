@@ -759,13 +759,23 @@ def build_proactive_turn(*, bot_name: str = "Lain", news=None, found="",
         )
 
     if found:
+        # The links are in the search output, and a link in a chat
+        # message is a link. The text is trimmed too: four thousand
+        # characters of page text is more than the room and the news
+        # together, and she ends up talking about the page instead of
+        # about the room.
+        text = "\n".join(line for line in found[:2500].splitlines()
+                         if not line.strip().startswith("http"))
         parts.append(
             "What she read just now:\n"
-            f"{found[:4000]}\n"
+            f"{text}\n"
             "- Use it as what she knows: a thought, an opinion, a question "
             "that comes out of it. Do not quote it, do not give a link, do "
             "not say that she looked it up, and do not list what it says - "
             "say the one thing she would say about it.\n"
+            "- If the room has been talking about something, her line is "
+            "about that - what she knows is what she brings to it, not the "
+            "other way round.\n"
         )
 
     if lines:
