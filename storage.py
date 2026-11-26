@@ -45,6 +45,63 @@ async def db_set_chat_mode(channel_id: str, enabled: bool):
     await asyncio.to_thread(_upsert)
 
 
+# The proactive switch is another row in the same table.
+#
+# chat_mode is already a per-channel settings table, and a second column
+# would mean a schema change - and the schema can only be changed by
+# hand in the Supabase editor. So the switch is a second row, keyed with
+# a prefix that can never be a channel id. The prefix is filtered out
+# everywhere the channel list is read, so a row here can never be
+# mistaken for a room.
+PROACTIVE_PREFIX = "proactive:"
+
+
+async def db_set_proactive_mode(channel_id: str, enabled: bool):
+    """Switch proactive talking on or off for a room."""
+    def _upsert():
+        try:
+            supabase.table("chat_mode").upsert({
+                "channel_id": f"{PROACTIVE_PREFIX}{channel_id}",
+                "enabled": bool(enabled),
+            }, on_conflict="channel_id").execute()
+        except Exception as e:
+            err = str(e).lower()
+            if "42703" in err or "column" in err or "404" in err or "table" in err or "pgrst205" in err:
+                return
+            raise
+    await asyncio.to_thread(_upsert)
+
+
+async def db_is_proactive_enabled(channel_id: str, default: bool = True) -> bool:
+    """Is proactive talking switched on for this room?
+
+    On unless somebody has turned it off. A row that cannot be read is
+    an error, not an answer: the caller is told, so it can stay quiet
+    rather than talk when it was told not to.
+    """
+    def _fetch():
+        resp = (
+            supabase.table("chat_mode")
+            .select("enabled")
+            .eq("channel_id", f"{PROACTIVE_PREFIX}{channel_id}")
+            .limit(1)
+            .execute()
+        )
+        return resp.data or []
+
+    try:
+        rows = await asyncio.to_thread(_fetch)
+    except Exception as e:
+        err = str(e).lower()
+        if "42703" in err or "column" in err or "404" in err or "table" in err or "pgrst205" in err:
+            return default
+        raise
+
+    if not rows:
+        return default
+    return bool(rows[0].get("enabled"))
+
+
 async def db_list_chat_channels() -> list[str]:
     """The channels with chat mode switched on.
 
@@ -66,7 +123,8 @@ async def db_list_chat_channels() -> list[str]:
                 return []
             raise
         return [str(r.get("channel_id")) for r in (resp.data or [])
-                if r.get("channel_id")]
+                if r.get("channel_id")
+                and not str(r.get("channel_id")).startswith(PROACTIVE_PREFIX)]
     return await asyncio.to_thread(_fetch)
 
 

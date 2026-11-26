@@ -264,6 +264,22 @@ async def main():
 
     check_true("a private chat is left alone", not spoke)
 
+    # The switch: a room where proactive talking has been turned off is
+    # left alone, whatever the rest of the state says.
+    spoke.clear()
+
+    async def switched_off(cid, default=True):
+        return False
+
+    old_enabled = main_module.db_is_proactive_enabled
+    main_module.db_is_proactive_enabled = switched_off
+    try:
+        await main_module._tick_once()
+    finally:
+        main_module.db_is_proactive_enabled = old_enabled
+
+    check_true("a room with proactive talking off is left alone", not spoke)
+
     # The tick has to actually start. It used to be started by a line
     # inside on_ready that imported its settings from the wrong module,
     # and the ImportError killed on_ready at the end - so the bot logged

@@ -39,9 +39,11 @@ from storage import (
     db_delete_fact,
     db_get_user_facts_multi,
     db_is_chat_mode_enabled,
+    db_is_proactive_enabled,
     db_scope_has_rows,
     db_set_chat_mode,
     db_set_fact,
+    db_set_proactive_mode,
 )
 from tools import BASE_DIR, safe_path, web_search, wolfram_alpha
 
@@ -622,25 +624,67 @@ async def chatmode(ctx, action: str):
 
 @bot.command(name="proactive")
 async def proactive_cmd(ctx):
-    """What the proactive tick is doing. Usage: !proactive"""
-    from proactive import gate, state_for
-
-    out = []
+    """Show the proactive settings, with a button to switch it."""
+    channel_id = str(ctx.channel.id)
     try:
-        from config import (PROACTIVE_ENABLED, PROACTIVE_QUIET_HOURS,
-                            PROACTIVE_TICK_SECONDS)
-        out.append(f"on: {PROACTIVE_ENABLED}  tick: {PROACTIVE_TICK_SECONDS}s  "
-                   f"quiet hours: {PROACTIVE_QUIET_HOURS or 'none'}")
+        enabled = await db_is_proactive_enabled(channel_id)
     except Exception as exc:
-        out.append(f"settings: FAILED ({exc})")
-    out.append(f"tick task: {_tick_state()}")
-    out.append(f"local time: {time.strftime('%H:%M:%S %Z', time.localtime())}")
-    now = time.time()
-    state = state_for(str(ctx.channel.id))
-    idle = f"{(now - state.last_human) / 60:.0f} minutes" if state.last_human else "never"
-    ok, why = gate(str(ctx.channel.id), now=now)
-    out.append(f"this room: idle {idle}  gate: {ok} ({why})")
-    await send_long(ctx, "\n".join(out))
+        enabled = None
+        print(f"could not read the proactive setting for {channel_id}: {exc}")
+
+    text = _proactive_text(enabled)
+    await ctx.send(text, view=ProactiveToggle(enabled))
+
+
+def _proactive_text(enabled) -> str:
+    """The line that says what the switch is doing."""
+    if enabled is None:
+        return ("I could not read the proactive setting for this room, so "
+                "the button may not work.")
+    if enabled:
+        return ("Proactive talking is ON for this room - I start things "
+                "here on my own when it has gone quiet.")
+    return ("Proactive talking is OFF for this room - I stay quiet unless "
+            "somebody says something to me.")
+
+
+class ProactiveToggle(discord.ui.View):
+    """A button that switches proactive talking on and off for a room.
+
+    The switch is stored in the database, so it survives a deploy, and
+    the view is registered again on startup so the button keeps working
+    after the bot restarts.
+    """
+
+    def __init__(self, enabled: bool | None = True, timeout: float | None = None):
+        super().__init__(timeout=timeout)
+        self.enabled = enabled
+
+    @discord.ui.button(label="Proactive", style=discord.ButtonStyle.secondary,
+                       custom_id="proactive-toggle")
+    async def toggle(self, interaction: discord.Interaction,
+                     button: discord.ui.Button):
+        channel_id = str(interaction.channel_id)
+        try:
+            current = await db_is_proactive_enabled(channel_id)
+            new = not current
+            await db_set_proactive_mode(channel_id, new)
+        except Exception as exc:
+            print(f"could not switch proactive talking in {channel_id}: {exc}")
+            await interaction.response.send_message(
+                "that did not work - the setting could not be saved.",
+                ephemeral=True)
+            return
+
+        self.enabled = new
+        button.label = ("Proactive: ON - turn off" if new
+                        else "Proactive: OFF - turn on")
+        button.style = (discord.ButtonStyle.danger if new
+                        else discord.ButtonStyle.success)
+        await interaction.response.edit_message(
+            content=_proactive_text(new), view=self)
+        print(f"proactive talking in {channel_id}: "
+              f"{'on' if new else 'off'} (by button)")
 
 
 @bot.command(name="test_piston")
@@ -739,6 +783,19 @@ async def _tick_once():
 
     for cid in channels:
         if is_detached(cid):
+            continue
+
+        # Proactive talking can be switched off for a room - by the button,
+        # or by hand in the database. It is on unless somebody has turned
+        # it off, and if the setting cannot be read the bot stays quiet:
+        # talking when it was told not to is the worse mistake.
+        try:
+            if not await db_is_proactive_enabled(cid):
+                print(f"proactive: skipping {cid} - proactive talking is off there")
+                continue
+        except Exception as exc:
+            print(f"proactive: the setting for {cid} could not be read ({exc}) "
+                  f"- staying quiet")
             continue
 
         channel = bot.get_channel(int(cid))
@@ -879,6 +936,14 @@ async def on_ready():
     except Exception as exc:
         READY["error"] = f"the tick did not start: {exc}"
         traceback.print_exc()
+
+    # The proactive button keeps working after a restart: the view is
+    # registered again here, so a button somebody clicked before the
+    # deploy still does the right thing after it.
+    try:
+        bot.add_view(ProactiveToggle())
+    except Exception as exc:
+        print(f"could not register the proactive button: {exc}")
 
     # Say whether the proper math renderer is in use. If Node is missing the
     # bot tries to install it at runtime; if that fails too, it falls back to
