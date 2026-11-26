@@ -540,6 +540,66 @@ def _streamer_note() -> str:
     )
 
 
+# Neuro-sama's character sheet carries an example conversation, and it
+# is there for a reason: adjectives tell a model what "playful" means
+# in the abstract, and examples tell it what playful sounds like in a
+# room. Two or three lines do more work than a paragraph of rules.
+#
+# They are kept apart, because a model asked to continue a transcript
+# will sometimes continue it with one of the examples instead of with
+# its own words - and a bot that says the same three sentences on
+# rotation is worse than one that says nothing.
+PROACTIVE_EXAMPLES = {
+    "English": [
+        "wait, they actually shipped that? that's wild",
+        "okay but who is paying for all those servers lol",
+        "emotional damage aside, that is kinda impressive",
+    ],
+    "Vietnamese": [
+        "cái này nghe như bịa á, có ai thấy nguồn chưa",
+        "tao thấy mấy đứa này cứ spam vậy, block là block :))",
+        "ê mà sao cái deadline nó lùi hoài vậy, lạ thật",
+    ],
+}
+
+
+def proactive_examples(language: str) -> list[str]:
+    """The example lines for the language the room is speaking."""
+    if (language or "").lower().startswith("english"):
+        return list(PROACTIVE_EXAMPLES["English"])
+    return list(PROACTIVE_EXAMPLES["Vietnamese"])
+
+
+def _proactive_examples(language: str) -> str:
+    """A few lines of what she sounds like when she speaks first."""
+    examples = proactive_examples(language)
+    return ("\nHow she sounds when nobody asked her anything - this is the "
+            "tone, not the words to reuse:\n"
+            + "\n".join(f"- {line}" for line in examples)
+            + "\n")
+
+
+def _proactive_register_note() -> str:
+    """How this room talks, in the few lines that matter here.
+
+    The full register note is for answering a message. This is the part
+    of it that a line of her own needs: the room's words, the kinship
+    terms, and the word she calls herself by. Without it she reaches
+    for "Tôi", which the guard then throws away.
+    """
+    return (
+        "\n"
+        "How this room talks:\n"
+        "- Match their register exactly: informal, lowercase, slang, their "
+        "punctuation. Say it the way they would say it.\n"
+        "- Call them the way they call each other. In this room that is "
+        "anh/em/a/e, and in Vietnamese you are 'mình'. Never 'Tôi', never "
+        "'Bạn', never 'bạn'.\n"
+        "- Be a person in the chat, not a service: no sign-off, no 'let me "
+        "know if', no 'hope this helps'.\n"
+    )
+
+
 def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
                            speaker=None, roster=None, bot_name: str = "",
                            bot_aliases=(), voice_lines=(), kind: str = "",
@@ -547,76 +607,28 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
                            language="", said_before=()) -> str:
     """The system prompt for saying something nobody asked for.
 
-    The same person as everywhere else - the same identity, the same
-    register rules, the same kinship terms, the same voice - with one
-    difference: there is no message to answer, and no tools. A turn
-    that starts a conversation is a turn where a lookup is never the
-    right answer, so the tool section is left out entirely rather than
-    left in and ignored.
+    This is Neuro-sama's shape, taken from the open-source recreation of
+    her: one prompt that puts the character first, then what she knows,
+    then the room, and then her name - and the model continues as her.
 
-    The rules at the end are the ones the research points at. People
-    judged a predictable proactive agent a better conversational partner
-    than a clever one, so the style is fixed rather than adapted: one
-    line, no emoji, no enthusiasm that is not warranted. And because
-    the system contributes information of its own when it speaks first,
-    the factuality risk is higher than in an ordinary reply - so it
-    states no facts at all, and claims to have done nothing.
-
-    `news` is what the room's news channel has been given. It goes in
-    as knowledge rather than as a subject: the point is that Lain knows
-    what happened today, not that she is here to report it.
-
-    `found` is what she looked up before speaking. It is there so that
-    the line is about something real - a person who read something
-    before saying something about it.
+    The part that was wrong before was the split. A small model chose a
+    kind and a subject, and a big model was then told "what you want to
+    say: a join - <subject>" and asked to write a line. Handed a
+    sentence to paraphrase, a model writes a caption. Handed a room and
+    something she knows, it writes what it would say - which is the
+    whole difference between a bot that reports and a person in a chat.
     """
     facts_text = ""
     if user_facts:
         facts_lines = [f"- {k}: {v}" for k, v in user_facts.items()]
-        facts_text = "\n\nWhat you know about these people:\n" + "\n".join(facts_lines)
+        facts_text = "\nWhat you know about these people:\n" + "\n".join(facts_lines)
 
     identity_text = _identity_note(bot_name, bot_aliases, roster)
     kinship_text = _kinship_note(roster)
-    people_text = _people_note(speaker, roster)
 
     voice_text = ""
     if voice_lines:
         voice_text = voice_note(voice_lines)
-
-    what = ""
-    if kind:
-        what = (
-            f"\nWhat you want to say: a {kind.replace('_', ' ')} - "
-            f"{target}.\n"
-        )
-
-    # The news the room's other channel has been given. This is
-    # knowledge, not a subject. A person in a room has read some of
-    # today's news; that is most of what it takes to sound like somebody
-    # who is actually there. But the news is not the point of the
-    # message, and repeating the headline back to the room is worthless -
-    # they can read it.
-    news_text = ""
-    if news:
-        from newsfeed import brief
-
-        lines = []
-        for item in list(news)[:4]:
-            text = brief(item)
-            if text:
-                lines.append(f"- {text}")
-        news_text = (
-            "\nYou have read some of the news from another channel in this "
-            "server. You are not here to report it - they can read it "
-            "themselves, and reading the headline back at them is worth "
-            "nothing. It is here because you know what happened today, "
-            "the way a person in the room does.\n"
-            + "\n".join(lines)
-            + "\n- If you mention any of it, it has to be a thought or a "
-            "question that connects to the room, not a summary of the "
-            "headline. And never state a detail from it as a fact you "
-            "verified - you read it, you did not check it.\n"
-        )
 
     # What she has already said in this room. If nobody answered it, the
     # rule is to move on - so she is told what she said, and told that
@@ -633,82 +645,150 @@ def build_proactive_prompt(user_facts: dict, *, shared: bool = True,
                 "the same thing in different words.\n"
             )
 
-    # The language of the room. There is no message being answered here,
-    # so nothing else tells the model which language to use - and it gets
-    # it wrong, answering a room that is speaking English in Vietnamese.
-    # It goes last, because everything above it is written in English and
-    # some of it is about Vietnamese.
     language_text = ""
     if language:
         if language.lower().startswith("english"):
             language_text = (
-                "\nThe room is speaking ENGLISH right now. Write the line in "
-                "English. Use no Vietnamese at all - not 'anh', not 'em', "
-                "not 'mình', not 'bạn', not a single Vietnamese word. The "
-                "examples about anh/em above are for when the room speaks "
-                "Vietnamese; here they do not apply.\n"
+                "\nThe room is speaking ENGLISH right now. Say it in English. "
+                "Use no Vietnamese at all - not 'anh', not 'em', not 'mình', "
+                "not 'bạn', not a single Vietnamese word. The examples about "
+                "anh/em above are for when the room speaks Vietnamese; here "
+                "they do not apply.\n"
             )
         else:
             language_text = (
-                f"\nThe room is speaking {language} right now. Write the line "
-                f"in {language}, and do not slip words from another language "
+                f"\nThe room is speaking {language} right now. Say it in "
+                f"{language}, and do not slip words from another language "
                 f"into it.\n"
             )
 
-    # What she looked up before speaking. This is the difference between a
-    # bot with opinions and a bot with things to say: she has read
-    # something, so the line can be about it. It is knowledge, like the
-    # news - she does not say that she looked it up, and she does not
-    # quote it.
-    found_text = ""
-    if found:
-        found_text = (
-            "\nYou read this just now, before saying anything:\n"
-            f"{found[:4000]}\n"
-            "- Use it as what you know: a thought, an opinion, a question "
-            "that comes out of it. Do not quote it, do not give a link, do "
-            "not say that you looked it up, and do not list what it says - "
-            "say the one thing you would say about it.\n"
-        )
-
     return (
-        "You are about to say something in a chat room that nobody asked you "
-        "for. You are a person in the room, not a service.\n"
+        "You are Lain, in a chat room, and you are about to say something "
+        "nobody asked you for. You are a person in the room, not a service.\n"
         + _owner_note()
         + identity_text
-        + (people_text + "\n" if people_text else "")
-        + _register_note_cached()
-        + kinship_text
-        + _quiet_note_cached()
         + _streamer_note()
+        + _proactive_register_note()
+        + kinship_text
         + voice_text
         + facts_text
-        + news_text
-        + found_text
         + said_text
+        + language_text
+        + _proactive_examples(language)
         + "\n"
         "How to say it:\n"
-        "- One line. One sentence, maybe two short ones. Nothing more.\n"
+        "- Your next words are what Lain says, now, in one go. One line, one "
+        "sentence, maybe two short ones. Nothing more.\n"
         "- Say the thing itself. Do not explain it, do not quote it, do not "
-        "say that you are going to say something, and do not ask whether "
+        "announce that you are about to say something, and do not ask whether "
         "anybody wants to hear it.\n"
         "- No emoji, no markdown, no bold, no lists, no heading.\n"
-        "- One thing, not a list of things. You may name the thing you read "
-        "just now - the company, the person, the number - if that is what "
-        "makes the line worth saying. Do not stack facts, do not summarise, "
-        "do not give a source or a link, and never say that you looked it "
-        "up or read it.\n"
-        "- Do not invent anything about the people in the room. You may "
-        "refer to what they actually said; do not guess what they are "
-        "feeling or what they are doing.\n"
-        "- It has to be easy to ignore. If it were not said, nothing would "
-        "be missing - it is a remark, not a request, and it does not "
-        "expect an answer.\n"
-        "- Match the register of the room and the people in it: their "
-        "words, their pronouns, their kinship terms, their punctuation.\n"
-        + what
-        + language_text
+        "- You are not here to report anything. If you mention what you know, "
+        "it has to be a thought, a reaction or a question that comes out of "
+        "it - never the headline, never a summary, never a source.\n"
+        "- You have read the things you know, you did not check them. So "
+        "never state a detail from one of them as a fact you verified.\n"
+        "- Never mention searching, looking something up, a source or a "
+        "link. You did not do anything. Reading the news like anybody else "
+        "in the room is fine - that is how anybody knows it.\n"
+        "- Do not invent anything about the people in the room. You may refer "
+        "to what they actually said; do not guess what they are feeling or "
+        "doing.\n"
+        "- It has to be easy to ignore. If it were not said, nothing would be "
+        "missing - it is a remark, not a request, and it does not expect an "
+        "answer.\n"
+        "- Match the register of the room and the people in it: their words, "
+        "their pronouns, their kinship terms, their punctuation.\n"
+        "- Do not repeat the example lines above. They are there for the "
+        "tone, not for the words - say something of your own.\n"
     )
+
+
+def _target_words(text: str) -> set:
+    """The words of a subject that name something."""
+    words = re.findall(r"[A-Za-z][A-Za-z0-9]{2,}", text or "")
+    return {w.lower() for w in words}
+
+
+def build_proactive_turn(*, bot_name: str = "Lain", news=None, found="",
+                          target: str = "", lines=(), limit: int = 10) -> str:
+    """What she knows and what the room looks like - and then her name.
+
+    This is the shape Neuro-sama's prompt has: the character, then the
+    things she knows, then the room, then the name she answers to. The
+    model continues from the name, so it is writing as her rather than
+    describing what she might say.
+
+    The room includes her own lines, with her name on them. She can see
+    what she already said, which is how a person avoids saying it twice.
+    """
+    parts = []
+
+    # The subject she has in mind decides which of the things she knows
+    # she is thinking about. Left to itself she reaches for whichever
+    # one is first in the list, and the decision that chose the subject
+    # turns out to have had nothing to do with what she says.
+    target_words = _target_words(target)
+
+    if news:
+        from newsfeed import brief
+
+        items = []
+        for item in list(news)[:3]:
+            text = brief(item)
+            if text:
+                items.append((text, item))
+        if target_words:
+            matching = [text for text, _item in items
+                        if target_words & _target_words(text)]
+            if matching:
+                items = [(text, item) for text, item in items
+                         if text in matching][:2]
+        if items:
+            parts.append(
+                f"{bot_name} knows these things:\n"
+                + "\n".join(f"- {text}" for text, _item in items)
+                + "\n"
+            )
+
+    if target:
+        parts.append(
+            f"The subject she has in mind: {target}\n"
+            "- Her line is about this subject. She is not talking about "
+            "something else she happens to know about.\n"
+        )
+
+    if found:
+        parts.append(
+            "What she read just now:\n"
+            f"{found[:4000]}\n"
+            "- Use it as what she knows: a thought, an opinion, a question "
+            "that comes out of it. Do not quote it, do not give a link, do "
+            "not say that she looked it up, and do not list what it says - "
+            "say the one thing she would say about it.\n"
+        )
+
+    if lines:
+        room = []
+        # The people first, and only a couple of the bot's own lines. In
+        # a quiet room the last dozen messages are the bot talking to
+        # itself, and a transcript like that makes it keep going.
+        picked = []
+        items = list(lines or [])
+        humans = [(i, p) for i, p in enumerate(items) if p[0] != "the bot"]
+        hers = [(i, p) for i, p in enumerate(items) if p[0] == "the bot"]
+        chosen = humans[-8:] + hers[-2:]
+        chosen.sort(key=lambda item: item[0])
+        for _i, (who, said) in chosen:
+            who = bot_name if who == "the bot" else who
+            said = (said or "").strip().replace("\n", " ")
+            if said:
+                room.append(f"{who}: {said[:280]}")
+        if room:
+            parts.append("The room:\n" + "\n".join(room) + "\n")
+
+    parts.append(f"{bot_name}:")
+    return "\n".join(parts)
 
 
 def build_system_prompt(user_facts: dict, kaggle_hint: str = "",

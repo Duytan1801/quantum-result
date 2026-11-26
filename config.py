@@ -206,10 +206,15 @@ PROACTIVE_ENABLED = (os.getenv("PROACTIVE_ENABLED", "1").strip().lower()
 # schedule: most of these checks end in silence.
 PROACTIVE_TICK_SECONDS = int(os.getenv("PROACTIVE_TICK_SECONDS", "60"))
 
-# The shortest gap between two unprompted messages in one channel. It is
-# short - two ticks cannot land on top of each other - and it grows when
-# the messages go unanswered.
-PROACTIVE_MIN_GAP_MINUTES = int(os.getenv("PROACTIVE_MIN_GAP_MINUTES", "2"))
+# The shortest gap between two unprompted messages in one channel.
+#
+# It used to be two minutes, which is thirty messages an hour into a room
+# nobody is in. Neuro-sama's rule is not a schedule at all: she speaks
+# when somebody says something, and when a room has been quiet for a
+# minute she is *allowed* to say something - not obliged to. The gap is
+# how often that is allowed to happen here, and ten minutes is roughly
+# what a person does in a quiet channel.
+PROACTIVE_MIN_GAP_MINUTES = int(os.getenv("PROACTIVE_MIN_GAP_MINUTES", "10"))
 
 # The most unprompted messages in one channel in one day. Zero means no
 # limit at all, which is what it is: the model decides whether to speak,
@@ -218,8 +223,10 @@ PROACTIVE_MAX_PER_DAY = int(os.getenv("PROACTIVE_MAX_PER_DAY", "0"))
 
 # The room has to have been quiet for at least this long before the bot
 # considers joining in - otherwise it is talking over a live conversation.
-# A minute of silence is the number Neuro-sama uses.
-PROACTIVE_MIN_IDLE_SECONDS = int(os.getenv("PROACTIVE_MIN_IDLE_SECONDS", "60"))
+# A minute of silence is the number Neuro-sama uses, but a Discord room
+# is not a stream: two minutes is the point where a room has actually
+# gone quiet rather than somebody thinking.
+PROACTIVE_MIN_IDLE_SECONDS = int(os.getenv("PROACTIVE_MIN_IDLE_SECONDS", "120"))
 
 # ...and not for longer than this, or the room is simply dead and the
 # bot would be talking to nobody. Zero means no limit at all: the model
@@ -329,6 +336,61 @@ def vision_models() -> list[tuple[str, AsyncOpenAI, str]]:
     it is no use here either.
     """
     return [("NVIDIA", nvidia_client, NVIDIA_MODEL)]
+
+
+# The models that can be chosen with !model, and the names they are
+# chosen by. The key is what somebody types; the value is the model id
+# the endpoint understands.
+MODEL_CHOICES = {
+    "super": NVIDIA_MODEL,
+    "nemotron": NVIDIA_MODEL,
+    "minimax": MINIMAX_MODEL,
+    "groq": GROQ_MODEL,
+    "bolt": BOLT_MODEL,
+}
+
+# What the names in MODEL_CHOICES are called, for the help text.
+MODEL_LABELS = {
+    "super": "Nemotron 3.5 Super VL - the strongest, and the slowest",
+    "minimax": "MiniMax M3.1 Flash - quick, but rate-limited to a few a minute",
+    "groq": "Groq Llama 3.3 70B - the fallback provider",
+    "bolt": "Nemotron 3.5 Bolt E4B - small and fast, for short answers",
+}
+
+
+def provider_for_model(model_id: str):
+    """The provider entry for a model id, if there is one.
+
+    The chain is a list of (name, client, model). A model chosen with
+    !model is put first in that list, with the rest kept behind it as
+    fallbacks - so choosing a model changes which one answers, not
+    whether there is a backup when it is down.
+
+    A model that is on offer but not in the default chain still gets an
+    entry. Bolt is there for the proactive scan rather than for
+    answering, so it is not in the chain - but somebody who picks it
+    with !model means it, and the chain is built for the room rather
+    than the other way round.
+    """
+    if not model_id:
+        return None
+    for entry in provider_chain():
+        if entry[2] == model_id:
+            return entry
+    if model_id == BOLT_MODEL:
+        return ("NVIDIA", nvidia_client, BOLT_MODEL)
+    if model_id == GROQ_MODEL and groq_client is not None:
+        return ("Groq", groq_client, GROQ_MODEL)
+    return None
+
+
+def chain_with_model(model_id: str):
+    """The answering chain, with a chosen model moved to the front."""
+    chain = provider_chain()
+    entry = provider_for_model(model_id)
+    if entry is None:
+        return chain
+    return [entry] + [e for e in chain if e[2] != model_id]
 
 def extra_body_for(provider_name: str, thinking: bool = True) -> dict:
     """Provider-specific request options.

@@ -798,7 +798,7 @@ async def _summarise_at_limit(messages: list, max_tokens: int) -> str:
 async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGENT_STEPS,
                          tools=None, persist=True, on_step=None, max_tokens=8192,
                          thinking: bool = True, require_tool: bool = False,
-                         speaker_id: str = ""):
+                         speaker_id: str = "", preferred_model: str = ""):
     """Run the agent tool-calling loop until the model produces a final answer.
 
     `max_tokens` is the allowance for each step. The reasoning and the
@@ -818,6 +818,11 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     `speaker_id` is who the reply is for. It is what lets the register
     check know which kinship term belongs in the answer.
 
+    `preferred_model` is a model id somebody chose with !model. It is
+    moved to the front of the chain, with the rest kept behind it as
+    fallbacks - so choosing a model changes which one answers, not
+    whether there is a backup when it is down.
+
     Returns a dict with the answer, which tools were used, and how many
     steps it took.
     """
@@ -829,6 +834,14 @@ async def run_agent_loop(messages, user_id=None, channel=None, max_steps=MAX_AGE
     # else starts with Nemotron too.
     chain = (vision_models() if _has_image(messages)
              else provider_chain())
+
+    # A model chosen for this room goes first. A turn with a picture keeps
+    # the vision chain: the chosen model may not be able to see one, and
+    # the picture is the point of that turn.
+    if preferred_model and not _has_image(messages):
+        from config import chain_with_model
+
+        chain = chain_with_model(preferred_model)
 
     # The request as it was before this turn started, and the answers the
     # model has already given in this conversation. The finished answer is
@@ -1413,7 +1426,8 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
                                    write_scope=None, shared: bool = False,
                                    speaker=None, roster=None, shape: str = "",
                                    bot_name: str = "", bot_aliases=(),
-                                   write_scopes=None, news=None):
+                                   write_scopes=None, news=None,
+                                   preferred_model: str = ""):
     """Answer a message, persist the exchange, and return the answer plus metadata.
 
     `scopes` are the context keys to read from. A channel with more than one
@@ -1446,6 +1460,10 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
     into the prompt as knowledge, and it answers a question about the news
     better than a web search does - so a question the feed covers is not
     forced through a lookup.
+
+    `preferred_model` is the model somebody chose for this room with
+    !model. It is put first in the chain, with the rest kept behind it as
+    fallbacks.
     """
     _check_delegation_tool()
     scopes = [str(s) for s in (scopes or [user_id]) if s]
@@ -1643,6 +1661,7 @@ async def get_nvidia_response_full(user_id, user_message, channel=None,
             thinking=thinking,
             require_tool=require_tool,
             speaker_id=str((speaker or {}).get("id") or ""),
+            preferred_model=preferred_model,
         )
     finally:
         written_files.reset(token)

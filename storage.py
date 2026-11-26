@@ -315,6 +315,32 @@ async def db_get_fact(user_id, key):
     return facts.get(key)
 
 
+async def db_clear_room_model(channel_id: str):
+    """Forget a room's chosen model, so the default chain is used again."""
+    await db_delete_fact(f"{MODEL_SETTING_PREFIX}{channel_id}", "model")
+
+
+# A room's chosen model lives in the facts table, under a scope that is
+# never read into a prompt. The room's own scope is "channel:<id>", and
+# this one is "setting:model:<id>", so a model id can never turn up as
+# something the bot knows about the people.
+MODEL_SETTING_PREFIX = "setting:model:"
+
+
+async def db_set_room_model(channel_id: str, model: str):
+    """Choose which model answers in this room."""
+    await db_set_fact(f"{MODEL_SETTING_PREFIX}{channel_id}", "model", model)
+
+
+async def db_get_room_model(channel_id: str) -> str:
+    """The model chosen for this room, or "" for the default chain."""
+    try:
+        value = await db_get_fact(f"{MODEL_SETTING_PREFIX}{channel_id}", "model")
+    except Exception:
+        return ""
+    return str(value or "")
+
+
 async def db_add_message(user_id, role, content, tool_calls=None, tool_call_id=None, name=None):
     """Append one row to the conversation history."""
     content = content or ""

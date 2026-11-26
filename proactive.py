@@ -147,7 +147,7 @@ class ChannelState:
     """What the bot knows about its own behaviour in one channel."""
 
     __slots__ = ("last_human", "last_bot", "last_proactive",
-                 "day", "today", "awaiting_reply", "ignored")
+                 "day", "today", "awaiting_reply", "ignored", "subjects")
 
     def __init__(self):
         self.last_human = 0.0
@@ -158,6 +158,10 @@ class ChannelState:
         self.awaiting_reply = 0.0
         # How many unprompted messages in this channel went unanswered.
         self.ignored = 0
+        # The subjects she has already brought up. Not the sentences - the
+        # sentences change and the subject does not, and it is the subject
+        # she keeps coming back to.
+        self.subjects: list[str] = []
 
 
 STATE: dict[str, ChannelState] = {}
@@ -180,6 +184,25 @@ def note_human(channel_id: str, when: float | None = None) -> None:
 def note_bot(channel_id: str, when: float | None = None) -> None:
     """The bot said something, whether or not it was asked to."""
     state_for(channel_id).last_bot = when if when is not None else time.time()
+
+
+def note_subject(channel_id: str, subject: str) -> None:
+    """The subject she has just brought up in this room.
+
+    The sentences change and the subject does not. A bot that brings up
+    "AI and reality perception" three evenings running is not having a
+    conversation, it is rereading its own notes - so the subject is
+    remembered separately from the line, and the next decision is told
+    to pick a different one.
+    """
+    subject = (subject or "").strip()
+    if not subject:
+        return
+    state = state_for(channel_id)
+    state.subjects = [s for s in state.subjects
+                      if s.lower() != subject.lower()]
+    state.subjects.append(subject)
+    del state.subjects[:-3]
 
 
 def note_proactive(channel_id: str, when: float | None = None) -> None:
@@ -330,16 +353,17 @@ If you want to say something about a specific fact, a number, a name or anything
 
 The lines under "What you already said" are yours. If nobody answered them, do not repeat them and do not pick the same subject again - move on and change the topic, or say something about today's news instead. A different remark about the same thing is still the same remark.
 
+The list under "Subjects you have already brought up" is the same thing one level up: those are the topics you have already had your say about. Do not pick one of them again - even from a different angle, even with different words. Pick something else, or say nothing.
+
 Do not ask the same kind of question twice in a row either. If you already asked how somebody is doing, do not ask again - bring up something from today's news, or something else they were talking about. A room where every line is the same question gets muted, and then you are talking to nobody.
 
 Answer on one line, in exactly this form:
-SPEAK <kind> | <the thing you want to say, in a few words> | <what to look up>
+SPEAK <kind> | <the subject, in a few words> | <what to look up>
 QUIET <why not>
 
-The last part is what will be searched for before the line is written. Put a
-short search query there - the subject you want to know more about, so
-that what you say is about something real and current rather than about
-nothing. If what you want to say needs no looking up, put a dash.
+The middle part is the subject, not the sentence - the line itself is written afterwards, and it will not be a version of what you write here. Name the thing: the person, the company, the topic. "Tidal removing AI songs" is a subject; "tidal is removing ai songs, how weird" is a sentence, and sentences are what the bot ends up sounding like.
+
+The last part is what will be searched for before the line is written. Put a short search query there - the subject you want to know more about, so that what you say is about something real and current rather than about nothing. If the subject needs no looking up, put a dash.
 """
 
 
@@ -422,38 +446,131 @@ async def _complete(model: str, messages, max_tokens: int = 200,
         return ""
 
 
+# The words that are in every subject: the kind of thing, rather than
+# the thing. "news about the breach" and "the breach" are the same
+# subject, and "the latest news" is not a subject at all.
+_SUBJECT_STOP = {
+    "news", "story", "thing", "things", "talk", "update", "article",
+    "report", "latest", "today", "connection", "asset", "stuff",
+    "people", "time", "day", "way", "part", "case", "issue", "rumor",
+    "rumour", "claim", "claims", "allegation", "about", "over", "with",
+    "from", "that", "this",
+}
+
+
+def _subject_words(text: str) -> set:
+    """The words of a subject that name something."""
+    words = re.findall(r"[A-Za-z][A-Za-z0-9]{2,}", text or "")
+    return {w.lower() for w in words if w.lower() not in _SUBJECT_STOP}
+
+
+def _same_subject(new: str, used) -> bool:
+    """Is this the subject she has already brought up?
+
+    The decision is asked not to repeat a subject, and a small model
+    asked a question like that does sometimes answer with the same
+    thing anyway - so the answer is checked here rather than trusted.
+    Two subjects are the same when they name the same thing: "MSS
+    asset connection" and "MSS asset Kang Wei" are one story, however
+    they are worded.
+    """
+    new_words = _subject_words(new)
+    if not new_words:
+        return False
+    for old in (used or []):
+        old_words = _subject_words(str(old))
+        if not old_words:
+            continue
+        shared = new_words & old_words
+        if not shared:
+            continue
+        # One shared name is enough when the subject is short - a short
+        # subject is mostly the name of the thing, and that is what
+        # makes two short subjects the same story.
+        if len(new_words) <= 3 or len(old_words) <= 3:
+            return True
+        if len(shared) / len(new_words) >= 0.5:
+            return True
+    return False
+
+
 async def decide_moment(*, bot_name: str, people: str, channel_name: str,
                         lines, now: float, news=None,
-                        idle_minutes=None) -> tuple[str, str, str]:
+                        idle_minutes=None, subjects=()) -> tuple[str, str, str]:
     """Does the bot have something it wants to say?
 
     The small model reads the room and answers with one of the three
     kinds, or with QUIET. The answer is not the message - it is the
     reason to write one, and the reason includes what to look up.
+
+    `subjects` are the subjects she has already brought up in this
+    room. The prompt says not to repeat them and the answer is checked
+    afterwards, because a small model asked a question like that
+    sometimes answers with the same thing anyway. A repeated subject is
+    asked about once more, with the subject named at it; if it comes
+    back the same, she says nothing.
     """
     context = _context_text(channel_name=channel_name, people=people,
                              lines=lines, now=now, news=news,
-                             idle_minutes=idle_minutes)
+                             idle_minutes=idle_minutes,
+                             subjects=subjects)
     prompt = MOMENT_PROMPT.format(bot_name=bot_name, people=people,
                                    context=context)
-    for model in MOMENT_MODELS:
-        text = await _complete(model, [{"role": "user", "content": prompt}],
-                               max_tokens=120, thinking=False)
-        if not text:
-            continue
-        kind, target, query = _parse_moment(text)
-        if kind:
-            return kind, target, query
-        # A clean QUIET is an answer too: stop here and do not ask again.
-        if text.strip().upper().startswith("QUIET"):
-            return "", "", ""
-    return "", ""
+    used = [str(s).strip() for s in (subjects or []) if str(s).strip()]
+
+    for attempt in range(2):
+        ask = prompt
+        if attempt and used:
+            ask += (
+                "\nYou have already brought up these subjects in this room: "
+                + ", ".join(used[-3:])
+                + ". Do not pick one of them, and do not pick another angle "
+                "on the same story. Pick something else entirely, or say "
+                "QUIET.\n"
+            )
+        repeated = False
+        for model in MOMENT_MODELS:
+            text = await _complete(model, [{"role": "user", "content": ask}],
+                                   max_tokens=120, thinking=False)
+            if not text:
+                continue
+            kind, target, query = _parse_moment(text)
+            if kind:
+                if used and _same_subject(target, used):
+                    # The same story again. Ask once more, more plainly.
+                    repeated = True
+                    continue
+                return kind, target, query
+            # A clean QUIET is an answer too: stop here and do not ask again.
+            if text.strip().upper().startswith("QUIET"):
+                return "", "", ""
+        if not repeated:
+            break
+    return "", "", ""
+
+
+def _balanced(lines, humans: int = 8, own: int = 2):
+    """The room as it should be read: the people, and a little of her.
+
+    In a room that has gone quiet, the last dozen messages are the
+    bot's own - it was talking to itself. A transcript like that tells
+    the model the room is discussing whatever it has been saying, which
+    is how a bot ends up having a conversation with itself. So the
+    people come first, and only a couple of her own lines are kept, to
+    remind her what she already said.
+    """
+    items = list(lines or [])
+    people = [(i, pair) for i, pair in enumerate(items) if pair[0] != "the bot"]
+    hers = [(i, pair) for i, pair in enumerate(items) if pair[0] == "the bot"]
+    picked = people[-humans:] + hers[-own:] if own else people[-humans:]
+    picked.sort(key=lambda item: item[0])
+    return [pair for _i, pair in picked]
 
 
 def _context_text(*, channel_name: str, people: str, lines, now: float,
-                  news=None, idle_minutes=None) -> str:
+                  news=None, idle_minutes=None, subjects=()) -> str:
     """The structured context the moment-decision reads."""
-    recent = list(lines or [])[-8:]
+    recent = _balanced(lines)
     body = [
         f"Channel: {channel_name}",
         f"People here: {people or 'unknown'}",
@@ -474,6 +591,19 @@ def _context_text(*, channel_name: str, people: str, lines, now: float,
         body.append("What you already said in this room (do not say it again):")
         for said in said_before[-3:]:
             body.append(f"- {said[:180]}")
+
+    # The subjects she has already brought up. Not the sentences - the
+    # sentences change and the subject does not, and it is the subject
+    # she keeps coming back to, night after night. Saying it again in
+    # different words is still the same remark.
+    used = [str(s).strip() for s in (subjects or []) if str(s).strip()]
+    if used:
+        body.append("")
+        body.append("Subjects you have already brought up in this room "
+                    "(pick a different one - a new angle on the same "
+                    "subject is still the same subject):")
+        for subject in used[-3:]:
+            body.append(f"- {subject[:120]}")
 
     body.append("What has been said, oldest first:")
     for who, said in recent:
@@ -506,9 +636,21 @@ async def write_line(*, kind: str, target: str, bot_name: str,
                      bot_aliases=(), roster=None, speaker=None,
                      user_facts: dict | None = None, voice_lines=(),
                      history=(), news=None, found="", language="",
-                     said_before=()) -> str:
-    """The sentence itself, in the room's voice."""
-    from prompts import build_proactive_prompt
+                     said_before=(), lines=(), model: str = "") -> str:
+    """The sentence itself, in the room's voice.
+
+    This is Neuro-sama's shape: one prompt - the character, what she
+    knows, the room, and then her name - and the model continues as
+    her. There is no instruction telling it what to say, because that
+    is what produced the caption voice: handed a sentence to
+    paraphrase, a model writes a caption.
+
+    `model` is the model this room chose with !model. It is put first
+    in the chain, with the rest kept behind it as fallbacks - the same
+    choice that decides who answers a message decides who writes the
+    unprompted ones.
+    """
+    from prompts import build_proactive_prompt, build_proactive_turn
 
     system = build_proactive_prompt(
         user_facts or {},
@@ -524,50 +666,59 @@ async def write_line(*, kind: str, target: str, bot_name: str,
         language=language,
         said_before=list(said_before or [])[-3:],
     )
-    messages = [{"role": "system", "content": system}]
-    messages.extend(list(history or [])[-12:])
+    turn = build_proactive_turn(
+        bot_name=bot_name,
+        news=news,
+        found=found,
+        target=target,
+        lines=lines,
+    )
+    messages = [{"role": "system", "content": system},
+                {"role": "user", "content": turn}]
 
-    # The language goes in the last message as well as the system prompt.
-    # The system prompt for this room talks about anh/em and mình, and a
-    # model asked to write a line in a room that is speaking English
-    # answers in Vietnamese anyway - the instruction has to be the last
-    # thing it reads, right before it writes.
-    ask = ("Say it now. One line, the way you would say it to them, "
-           "and nothing else - no explanation, no quotation marks "
-           "around it, no mention of what you are doing, and no "
-           "mention of having looked anything up.")
-    if language:
-        if language.lower().startswith("english"):
-            ask += (" The room is speaking English, so write it in English. "
-                    "No Vietnamese words at all - not 'anh', not 'em', not "
-                    "'mình'. Address them by their name or as 'you'.")
-        else:
-            ask += (f" The room is speaking {language}, so write it in "
-                    f"{language}.")
+    from config import chain_with_model, provider_chain
 
-    messages.append({
-        "role": "user",
-        "content": ask,
-    })
+    chain = chain_with_model(model) if model else provider_chain()
 
-    from config import provider_chain
-
-    for _name, client, model in provider_chain():
+    for _name, client, chosen in chain:
         try:
             response = await client.chat.completions.create(
-                model=model,
+                model=chosen,
                 messages=messages,
-                temperature=0.6,
+                temperature=0.8,
                 max_completion_tokens=300,
                 top_p=0.95,
                 extra_body=extra_body_for(_name, thinking=False),
             )
         except Exception as exc:
-            print(f"proactive: {model} failed: {str(exc)[:120]}")
+            print(f"proactive: {chosen} failed: {str(exc)[:120]}")
             continue
         text = (response.choices[0].message.content or "").strip()
+        text = _clean_generated(text, bot_name)
         if text:
             return text
+    return ""
+
+
+def _clean_generated(text: str, bot_name: str = "Lain") -> str:
+    """The first line of what came back, without the name on the front.
+
+    The model is continuing from "Lain:", so sometimes it writes the
+    name again, and sometimes it writes a line and then a thought about
+    the line. Only the first line is the line.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        prefix = f"{bot_name}:"
+        if line.lower().startswith(prefix.lower()):
+            line = line[len(prefix):].strip()
+        if line:
+            return line
     return ""
 
 
@@ -604,6 +755,7 @@ def check_line(text: str) -> tuple[bool, str]:
     Returns (yes, why-not).
     """
     from guard import register_problem, sanitize_reply
+    from prompts import proactive_examples
 
     text = (text or "").strip()
     if not text:
@@ -620,6 +772,27 @@ def check_line(text: str) -> tuple[bool, str]:
     for phrase, why in _NOT_ALLOWED:
         if phrase in low:
             return False, why
+
+    # The examples in the prompt are there for the tone. A model asked to
+    # continue a transcript will sometimes continue it with one of them
+    # instead of with its own words, and a bot that says the same three
+    # sentences on rotation is worse than one that says nothing.
+    #
+    # It is not only the example word for word. A model asked for a line
+    # about a thing will often reach for an example and swap the subject
+    # out - which is the same sentence with a new noun in it, and reads
+    # exactly as canned as the original.
+    words = _words(text)
+    for example in proactive_examples("") + proactive_examples("English"):
+        example_words = _words(example)
+        if not words or not example_words:
+            continue
+        if words == example_words:
+            return False, "it is one of the example lines, word for word"
+        shared = words & example_words
+        if len(shared) / len(example_words) >= 0.6:
+            return False, "it is an example line with the subject swapped out"
+
     problem = register_problem(text)
     if problem:
         return False, f"it is in the wrong register ({problem})"
@@ -637,7 +810,14 @@ def clean_line(text: str) -> str:
 
 
 def _words(text: str) -> set:
-    return set(re.findall(r"\w+", (text or "").lower()))
+    """The words of a line, for comparing one line with another.
+
+    The short ones are left out. "có", "là", "và" and "of" are in half
+    the sentences ever written, so a line that shares one of them with
+    another line has not really said the same thing.
+    """
+    return {w for w in re.findall(r"\w+", (text or "").lower())
+            if len(w) > 2}
 
 
 def repeats(text: str, lines, threshold: float = 0.8) -> bool:
@@ -672,11 +852,17 @@ def repeats(text: str, lines, threshold: float = 0.8) -> bool:
 async def speak_once(*, channel_id: str, channel, bot, bot_name: str,
                      bot_aliases=(), roster=None, lines=(),
                      people: str = "", channel_name: str = "",
-                     now: float | None = None, news=None) -> str:
+                     now: float | None = None, news=None,
+                     model: str = "") -> str:
     """Try to say one unprompted thing in this channel.
 
     Returns the message that was sent, or "" if nothing was. Every step
     of it can end in silence, and that is the normal outcome.
+
+    `model` is the model this room chose with !model. The decision
+    about whether to speak stays on NVIDIA - it is a scan of the room,
+    and a scan that quietly fell through to another provider would be
+    another model's opinion rather than a fallback for a failed one.
     """
     now = now if now is not None else time.time()
 
@@ -691,6 +877,7 @@ async def speak_once(*, channel_id: str, channel, bot, bot_name: str,
         now=now,
         news=news,
         idle_minutes=idle_minutes,
+        subjects=state.subjects,
     )
     if not kind:
         print(f"proactive: staying quiet in {channel_id} - nothing worth saying")
@@ -723,6 +910,8 @@ async def speak_once(*, channel_id: str, channel, bot, bot_name: str,
         found=found,
         language=_language(lines),
         said_before=said_before,
+        lines=lines,
+        model=model,
     )
     if not text:
         print(f"proactive: no line came back in {channel_id}")
@@ -746,5 +935,8 @@ async def speak_once(*, channel_id: str, channel, bot, bot_name: str,
 
     sent = await channel.send(line)
     note_proactive(channel_id, now)
+    # Remember the subject, not just the sentence. The sentences change
+    # and the subject does not - it is what she keeps coming back to.
+    note_subject(channel_id, target)
     print(f"proactive: said something in {channel_id}: {line}")
     return line

@@ -35,6 +35,7 @@ QUICK = [
     "test_newsfeed.py",
     "test_retry.py",
     "test_proactive.py",
+    "test_model_command.py",
 ]
 
 LIVE = [

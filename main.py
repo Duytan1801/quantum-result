@@ -36,7 +36,9 @@ from config import (ANSWER_RETRY_ATTEMPTS, ANSWER_RETRY_DELAY,
                     NEWS_CHANNEL_ID, NEWS_MAX_AGE_HOURS, is_detached)
 from sandbox import run_code_in_sandbox
 from storage import (
+    db_clear_room_model,
     db_delete_fact,
+    db_get_room_model,
     db_get_user_facts_multi,
     db_is_chat_mode_enabled,
     db_is_proactive_enabled,
@@ -44,6 +46,7 @@ from storage import (
     db_set_chat_mode,
     db_set_fact,
     db_set_proactive_mode,
+    db_set_room_model,
 )
 from tools import BASE_DIR, safe_path, web_search, wolfram_alpha
 
@@ -113,6 +116,34 @@ WAITING: dict[str, asyncio.Task] = {}
 # and the replies use the same copy.
 NEWS_CACHE: tuple[float, list] | None = None
 NEWS_CACHE_TTL = 300
+
+# The model each room chose with !model, and when it was last read. The
+# choice changes rarely, so it is kept here rather than read from the
+# database on every message - a room's traffic should not cost a round
+# trip to Supabase each time.
+ROOM_MODELS: dict[str, tuple[float, str]] = {}
+ROOM_MODEL_TTL = 60.0
+
+
+async def _room_model(channel_id: str) -> str:
+    """The model this room chose with !model, if anybody chose one.
+
+    It is a preference, not a rule: the rest of the chain stays behind
+    the chosen model as fallbacks.
+    """
+    key = str(channel_id)
+    now = time.time()
+    cached = ROOM_MODELS.get(key)
+    if cached and now - cached[0] < ROOM_MODEL_TTL:
+        return cached[1]
+    try:
+        model = await db_get_room_model(key)
+    except Exception as exc:
+        print(f"could not read the room's model: {exc}")
+        return ""
+    model = model or ""
+    ROOM_MODELS[key] = (now, model)
+    return model
 
 
 async def _last_human_at(channel) -> float:
@@ -386,6 +417,16 @@ def proactive_status():
         idle = f"{(now - last) / 60:.0f}m" if last else "never"
         out.append(f"  {cid}: shared={SHARED_CHANNELS.get(str(cid))} "
                    f"idle={idle} gate={ok} ({why})")
+        # The subjects she has already brought up, and the model this
+        # room chose. Both are the outside view of a decision that is
+        # otherwise invisible.
+        subjects = ", ".join(state.subjects) or "none"
+        out.append(f"    subjects: {subjects}")
+        try:
+            model = asyncio.run(_room_model(cid))
+        except Exception:
+            model = ""
+        out.append(f"    model: {model or 'the default chain'}")
 
     return "\n".join(out) + "\n"
 
@@ -687,6 +728,46 @@ class ProactiveToggle(discord.ui.View):
               f"{'on' if new else 'off'} (by button)")
 
 
+@bot.command(name="model")
+async def model_cmd(ctx, choice: str = ""):
+    """Choose which model answers in this room.
+
+    Usage: !model [super|minimax|groq|bolt|auto]
+    """
+    from config import MODEL_CHOICES, MODEL_LABELS, chain_with_model
+
+    channel_id = str(ctx.channel.id)
+    choice = (choice or "").strip().lower()
+
+    if choice in ("", "list", "?"):
+        current = await _room_model(channel_id)
+        lines = ["Which model should answer in this room?"]
+        for slug, label in MODEL_LABELS.items():
+            mark = " <- in use" if current == MODEL_CHOICES.get(slug) else ""
+            lines.append(f"`!model {slug}` - {label}{mark}")
+        lines.append("`!model auto` - the default chain, strongest first")
+        await ctx.send("\n".join(lines))
+        return
+
+    if choice in ("auto", "default", "off"):
+        await db_clear_room_model(channel_id)
+        ROOM_MODELS[channel_id] = (time.time(), "")
+        names = ", ".join(name for name, _client, _model in chain_with_model(""))
+        await ctx.send(f"Back to the default chain for this room: {names}.")
+        return
+
+    model_id = MODEL_CHOICES.get(choice)
+    if not model_id:
+        options = ", ".join(sorted(set(MODEL_CHOICES.keys())))
+        await ctx.send(f"I do not know that model. Try one of: {options}, auto.")
+        return
+
+    await db_set_room_model(channel_id, model_id)
+    ROOM_MODELS[channel_id] = (time.time(), model_id)
+    await ctx.send(f"Answers in this room now come from `{model_id}`. "
+                   "The others stay behind it as fallbacks.")
+
+
 @bot.command(name="test_piston")
 async def test_piston(ctx):
     """Test if the code execution sandbox is working. Usage: !test_piston"""
@@ -844,7 +925,12 @@ async def _tick_once():
             continue
 
         try:
-            lines = await _recent_messages(channel, limit=12)
+            # A wide window, because in a room that has gone quiet the
+            # last dozen messages are the bot talking to itself. The
+            # reading of the room keeps the people and a couple of her
+            # own lines, so the people have to be in the window to begin
+            # with - and they are the voice anchor, and the language.
+            lines = await _recent_messages(channel, limit=30)
             roster = await _channel_roster(cid, channel)
             own_name = bot_canonical_name(bot.user)
             own_aliases = tuple(n for n in bot_name_variants(bot.user)
@@ -863,6 +949,7 @@ async def _tick_once():
                     channel_name=getattr(channel, "name", cid),
                     now=now,
                     news=news,
+                    model=await _room_model(cid),
                 )
             if line:
                 LAST_BOT_REPLY[cid] = time.time()
@@ -1030,9 +1117,12 @@ async def on_message(message):
     # room was last alive, and this is the exact moment - the tick's own
     # read of the channel history is the fallback for after a deploy.
     try:
-        from proactive import note_human
+        from proactive import note_human, note_reply
 
         note_human(channel_id)
+        # Somebody answered, so the silence is over and the next unprompted
+        # message does not have to wait for the backoff to expire.
+        note_reply(channel_id)
     except Exception:
         pass
 
@@ -1184,6 +1274,9 @@ async def on_message(message):
                 TRACKER.mark_shared(channel_id)
 
             async with message.channel.typing():
+                # The model this room chose with !model, if anybody chose
+                # one.
+                room_model = await _room_model(channel_id)
                 result = await get_nvidia_response_full(
                     message.author.id,
                     content,
@@ -1199,6 +1292,7 @@ async def on_message(message):
                     bot_name=own_name,
                     bot_aliases=own_aliases,
                     news=await _read_news(),
+                    preferred_model=room_model,
                 )
             sent = await send_long(message, result["answer"], footer=result["footer"])
             LAST_BOT_REPLY[channel_id] = time.time()

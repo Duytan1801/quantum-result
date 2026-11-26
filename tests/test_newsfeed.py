@@ -128,11 +128,16 @@ prompt = prompts.build_proactive_prompt(
     {}, shared=True, roster=None, bot_name="Lain",
     bot_aliases=("lain",), voice_lines=(), kind="join",
     target="a thought about the Tidal news", news=[ai_item])
-check_true("the news is in the proactive prompt", "Tidal removes" in prompt)
 check_true("the prompt says the news is not the point",
-           "not here to report it" in prompt)
+           "not here to report anything" in prompt)
 check_true("the prompt says not to state facts",
            "as a fact you verified" in prompt)
+
+# The news itself is knowledge, and in Neuro-sama's shape the knowledge
+# goes in the turn - the things she knows, then the room, then her name.
+turn = prompts.build_proactive_turn(bot_name="Lain", news=[ai_item])
+check_true("the news is in the proactive turn", "Tidal removes" in turn)
+check_true("the turn says she knows it", "knows these things" in turn)
 
 context = proactive._context_text(channel_name="model", people="Jade",
                                   lines=[("Jade", "e chơi MC đi")],

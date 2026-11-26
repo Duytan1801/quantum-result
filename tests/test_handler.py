@@ -177,6 +177,11 @@ async def main_probe():
     main.decide = fake_decide
     main.get_nvidia_response_full = fake_agent
     main.WAIT_SECONDS = 0.2
+    # The model this room chose with !model. It is read from the
+    # database, and the database has an opinion of its own about this
+    # room - which is not what this test is about.
+    main.db_get_room_model = lambda cid: asyncio.sleep(0, result="")
+    main.ROOM_MODELS.clear()
 
     async def fake_send_long(message, content, footer=None):
         return await message.channel.send(content)
