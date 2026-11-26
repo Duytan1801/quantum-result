@@ -22,6 +22,25 @@ services:
       # day and nobody could tell why.
       - key: TZ
         value: Asia/Ho_Chi_Minh
+      # The proactive half of the bot, written out rather than left to the
+      # defaults: a stale value in the dashboard is enough to keep it
+      # silent, and silent is the failure nobody notices. No cap, no quiet
+      # hours, a minute of silence is enough, and nothing is off for being
+      # a day old.
+      - key: PROACTIVE_ENABLED
+        value: "1"
+      - key: PROACTIVE_TICK_SECONDS
+        value: "60"
+      - key: PROACTIVE_MIN_IDLE_SECONDS
+        value: "60"
+      - key: PROACTIVE_MIN_GAP_MINUTES
+        value: "2"
+      - key: PROACTIVE_MAX_PER_DAY
+        value: "0"
+      - key: PROACTIVE_MAX_IDLE_MINUTES
+        value: "0"
+      - key: PROACTIVE_QUIET_HOURS
+        value: ""
       - key: DISCORD_TOKEN
         sync: false
       - key: NVIDIA_API_KEY

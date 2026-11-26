@@ -267,7 +267,7 @@ def gate(channel_id: str, *, now: float | None = None, chat_on: bool = True,
     idle_minutes = max(0, int(idle // 60))
     if idle < PROACTIVE_MIN_IDLE_SECONDS / 60:
         return False, f"the room was active {idle_minutes} minutes ago"
-    if idle > PROACTIVE_MAX_IDLE_MINUTES:
+    if PROACTIVE_MAX_IDLE_MINUTES and idle > PROACTIVE_MAX_IDLE_MINUTES:
         return False, f"the room has been quiet for {int(idle // 60)} hours"
 
     if state.last_bot and (now - state.last_bot) < 60:

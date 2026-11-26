@@ -210,8 +210,12 @@ PROACTIVE_MAX_PER_DAY = int(os.getenv("PROACTIVE_MAX_PER_DAY", "0"))
 PROACTIVE_MIN_IDLE_SECONDS = int(os.getenv("PROACTIVE_MIN_IDLE_SECONDS", "60"))
 
 # ...and not for longer than this, or the room is simply dead and the
-# bot would be talking to nobody.
-PROACTIVE_MAX_IDLE_MINUTES = int(os.getenv("PROACTIVE_MAX_IDLE_MINUTES", "1440"))
+# bot would be talking to nobody. Zero means no limit at all: the model
+# decides whether there is something to say, and a room that has been
+# quiet for a day is still a room. It used to be 1440 - a day - and that
+# meant the bot went permanently quiet in any room that nobody happened
+# to be in that evening.
+PROACTIVE_MAX_IDLE_MINUTES = int(os.getenv("PROACTIVE_MAX_IDLE_MINUTES", "0"))
 
 # The hours of the day when the bot does not start anything. "0-7" is
 # from midnight to seven; "22-3" wraps around midnight. Empty means no

@@ -73,6 +73,10 @@ BOT_MESSAGE_ID_LIMIT = 200
 # chat.
 SHARED_CHANNELS: dict[str, bool] = {}
 
+# The proactive tick. It is started once - Discord can fire on_ready more
+# than once, and two ticks would talk over each other.
+TICK_TASK: asyncio.Task | None = None
+
 # Who is in each channel, read from the channel's own messages. Nobody is
 # listed in the code: the bot learns the room from the room.
 ROSTERS: dict[str, list] = {}
@@ -592,6 +596,133 @@ async def _reembed_if_needed(model: str):
         print(f"long-term memory: re-embed failed ({exc})")
 
 
+# ---------------------------------------------------------------------------
+# The proactive tick
+# ---------------------------------------------------------------------------
+# The tick is at module level rather than inside on_ready so that it can be
+# exercised without a Discord connection - the bug it had (a room that was
+# skipped because the in-memory map had not been filled yet) was invisible
+# from the outside and obvious from here.
+
+
+async def _pro_active_tick():
+    """Run while the bot is up, looking for moments to speak.
+
+    The tick runs every minute, checks the channels where chat is switched
+    on, and decides whether to say something. Most of the time it says
+    nothing, and that is the normal outcome.
+    """
+    from config import PROACTIVE_TICK_SECONDS
+
+    await asyncio.sleep(PROACTIVE_TICK_SECONDS // 2)
+    while True:
+        try:
+            await _tick_once()
+        except Exception as exc:
+            print(f"proactive tick error: {exc}")
+        try:
+            await asyncio.sleep(PROACTIVE_TICK_SECONDS)
+        except asyncio.CancelledError:
+            break
+
+
+async def _tick_once():
+    """Look at every channel that has chat on, and decide about each.
+
+    Most of this ends in silence. That is the point of it.
+    """
+    from proactive import (awaiting_reply, gate, speak_once, state_for)
+    from storage import db_list_chat_channels
+
+    now = time.time()
+
+    try:
+        channels = await db_list_chat_channels()
+    except Exception as exc:
+        print(f"proactive: could not read the chat channels: {exc}")
+        channels = []
+
+    # The news the server's other channel has been given. This is
+    # what Lain knows about today - it changes what she can say,
+    # not what she is here to do.
+    news = await _read_news()
+
+    for cid in channels:
+        if is_detached(cid):
+            continue
+
+        channel = bot.get_channel(int(cid))
+        if channel is None:
+            continue
+
+        # Is this a room? The in-memory map is empty after a deploy
+        # until somebody messages, so the tick used to skip every
+        # channel - and a room where nobody has said anything since
+        # the deploy is exactly the room the bot is here for. The
+        # database and the channel's own history know whether this has
+        # been a room before, so the tick asks them.
+        try:
+            shared = await _channel_is_shared(cid, channel)
+        except Exception as exc:
+            print(f"proactive: could not check whether {cid} is a room: {exc}")
+            shared = SHARED_CHANNELS.get(str(cid), False)
+        if not shared:
+            continue
+
+        # If the bot spoke first and nobody answered, the next attempt
+        # waits longer. The counter only moves when somebody asks, so
+        # a room that nobody is in would otherwise get a message every
+        # two minutes, all night.
+        awaiting_reply(cid, now)
+
+        # When the room was last talked in, from the channel itself.
+        #
+        # The in-memory state only knows about the messages that arrived
+        # while the bot was running, so after a restart - and the bot is
+        # restarted every time it is deployed - it thought nobody had
+        # spoken in days, and stayed quiet. The channel knows better.
+        last_human = await _last_human_at(channel)
+        if last_human:
+            state = state_for(cid)
+            state.last_human = max(state.last_human, last_human)
+
+        ok, why = gate(cid, now=now)
+        if not ok:
+            print(f"proactive: skipping {cid} - {why}")
+            continue
+
+        # Do not talk over a turn that is already happening.
+        if _channel_lock(cid).locked():
+            print(f"proactive: skipping {cid} - the bot is busy")
+            continue
+
+        try:
+            lines = await _recent_messages(channel, limit=12)
+            roster = await _channel_roster(cid, channel)
+            own_name = bot_canonical_name(bot.user)
+            own_aliases = tuple(n for n in bot_name_variants(bot.user)
+                                 if n.lower() != own_name.lower())
+
+            async with _channel_lock(cid):
+                line = await speak_once(
+                    channel_id=cid,
+                    channel=channel,
+                    bot=bot,
+                    bot_name=own_name,
+                    bot_aliases=own_aliases,
+                    roster=roster,
+                    lines=lines,
+                    people=roster_line(roster),
+                    channel_name=getattr(channel, "name", cid),
+                    now=now,
+                    news=news,
+                )
+            if line:
+                LAST_BOT_REPLY[cid] = time.time()
+        except Exception as exc:
+            print(f"proactive: could not speak in {cid}: {exc}")
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
@@ -657,113 +788,28 @@ async def on_ready():
     # ---------------------------------------------------------------------------
     # The proactive tick
     # ---------------------------------------------------------------------------
-    async def _pro_active_tick():
-        """Run while the bot is up, looking for moments to speak.
-
-        The tick runs every few minutes, checks the channels where chat is
-        switched on, and decides whether to say something. Most of the time it
-        says nothing, and that is the normal outcome.
-
-        The check is lightweight: it only reads the in-memory state of who
-        spoke when, so it can run even when the database is slow.
-        """
-        from config import PROACTIVE_TICK_SECONDS
-        from storage import db_list_chat_channels
-
-        await asyncio.sleep(PROACTIVE_TICK_SECONDS // 2)
-        while True:
-            try:
-                await _tick_once()
-            except Exception as exc:
-                print(f"proactive tick error: {exc}")
-            try:
-                await asyncio.sleep(PROACTIVE_TICK_SECONDS)
-            except asyncio.CancelledError:
-                break
-
-
-    async def _tick_once():
-        """Look at every channel that has chat on, and decide about each.
-
-        Most of this ends in silence. That is the point of it.
-        """
-        from proactive import gate, speak_once, state_for, in_quiet_hours
-
-        now = time.time()
-
-        try:
-            channels = await db_list_chat_channels()
-        except Exception:
-            channels = []
-
-        # The news the server's other channel has been given. This is
-        # what Lain knows about today - it changes what she can say,
-        # not what she is here to do.
-        news = await _read_news()
-
-        for cid in channels:
-            if str(cid) not in SHARED_CHANNELS:
-                continue
-            if is_detached(cid):
-                continue
-
-            channel = bot.get_channel(int(cid))
-            if channel is None:
-                continue
-
-            # When the room was last talked in, from the channel itself.
-            #
-            # The in-memory state only knows about the messages that arrived
-            # while the bot was running, so after a restart - and the bot is
-            # restarted every time it is deployed - it thought nobody had
-            # spoken in days, and stayed quiet. The channel knows better.
-            last_human = await _last_human_at(channel)
-            if last_human:
-                state = state_for(cid)
-                state.last_human = max(state.last_human, last_human)
-
-            ok, why = gate(cid, now=now)
-            if not ok:
-                print(f"proactive: skipping {cid} - {why}")
-                continue
-
-            # Do not talk over a turn that is already happening.
-            if _channel_lock(cid).locked():
-                print(f"proactive: skipping {cid} - the bot is busy")
-                continue
-
-            try:
-                lines = await _recent_messages(channel, limit=12)
-                roster = await _channel_roster(cid, channel)
-                own_name = bot_canonical_name(bot.user)
-                own_aliases = tuple(n for n in bot_name_variants(bot.user)
-                                     if n.lower() != own_name.lower())
-
-                async with _channel_lock(cid):
-                    line = await speak_once(
-                        channel_id=cid,
-                        channel=channel,
-                        bot=bot,
-                        bot_name=own_name,
-                        bot_aliases=own_aliases,
-                        roster=roster,
-                        lines=lines,
-                        people=roster_line(roster),
-                        channel_name=getattr(channel, "name", cid),
-                        now=now,
-                        news=news,
-                    )
-                if line:
-                    LAST_BOT_REPLY[cid] = time.time()
-            except Exception as exc:
-                print(f"proactive: could not speak in {cid}: {exc}")
+    # The tick itself lives at module level, so it can be tested without a
+    # Discord connection - and so that it is not rebuilt every time
+    # on_ready fires.
 
     # Start the proactive tick. It runs in the background while the bot
     # stays responsive. If it is disabled, it simply does nothing.
-    from proactive import PROACTIVE_ENABLED
+    global TICK_TASK
+
+    from proactive import (PROACTIVE_ENABLED, PROACTIVE_MAX_IDLE_MINUTES,
+                           PROACTIVE_MIN_GAP_MINUTES,
+                           PROACTIVE_MIN_IDLE_SECONDS,
+                           PROACTIVE_QUIET_HOURS, PROACTIVE_TICK_SECONDS)
+
+    print(f"proactive: tick every {PROACTIVE_TICK_SECONDS}s, "
+          f"idle {PROACTIVE_MIN_IDLE_SECONDS}s, "
+          f"gap {PROACTIVE_MIN_GAP_MINUTES}m, "
+          f"quiet hours {PROACTIVE_QUIET_HOURS or 'none'}, "
+          f"max idle {PROACTIVE_MAX_IDLE_MINUTES or 'none'} minutes")
 
     if PROACTIVE_ENABLED:
-        asyncio.create_task(_pro_active_tick())
+        if TICK_TASK is None or TICK_TASK.done():
+            TICK_TASK = asyncio.create_task(_pro_active_tick())
     else:
         print("proactive ticking: disabled")
 
@@ -782,6 +828,16 @@ async def on_message(message):
     # message, including the ones the bot stays quiet for, because that is
     # what tells a one-to-one channel apart from a room.
     TRACKER.note(channel_id, message.author.id)
+
+    # Somebody said something. The proactive tick needs to know when the
+    # room was last alive, and this is the exact moment - the tick's own
+    # read of the channel history is the fallback for after a deploy.
+    try:
+        from proactive import note_human
+
+        note_human(channel_id)
+    except Exception:
+        pass
 
     # A prefix command (e.g. "!ask ...") is handled by process_commands.
     # Don't also feed it to the chat handler, or it would run twice.
@@ -949,6 +1005,12 @@ async def on_message(message):
                 )
             sent = await send_long(message, result["answer"], footer=result["footer"])
             LAST_BOT_REPLY[channel_id] = time.time()
+            try:
+                from proactive import note_bot
+
+                note_bot(channel_id)
+            except Exception:
+                pass
             _remember_bot_messages(channel_id, sent)
             await attach_images(message, result.get("files") or [])
 

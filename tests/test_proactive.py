@@ -16,6 +16,7 @@ Two things are checked here:
 import asyncio
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -156,6 +157,103 @@ async def main():
 
     check_true("the first look says answer", first.reply)
     check_true("the second look does not take it back", second.reply)
+
+    print()
+    print("=" * 70)
+    print("THE TICK")
+    print("=" * 70)
+
+    # The bug: after a deploy, the in-memory map of rooms is empty until
+    # somebody says something, and the tick skipped every channel that was
+    # not in it. So a room where nobody had spoken since the deploy - the
+    # room the bot exists for - was never even looked at.
+    import storage
+
+    spoke = {}
+
+    class FakeChannel:
+        id = 1569657875368902666
+        name = "model"
+
+    class FakeBot:
+        def get_channel(self, cid):
+            return FakeChannel()
+
+        class user:
+            id = "1"
+            name = "lain2"
+
+    async def fake_chat_channels():
+        return ["1569657875368902666"]
+
+    async def fake_is_shared(cid, channel=None):
+        return True
+
+    async def fake_last_human(channel):
+        return time.time() - 600
+
+    async def fake_news(limit=8, force=False):
+        return []
+
+    async def fake_recent(channel, limit=12, exclude_id=None):
+        return [("Damian", "hello")]
+
+    async def fake_roster(cid, channel=None, force=False):
+        return []
+
+    async def fake_speak_once(**kwargs):
+        spoke["line"] = kwargs.get("channel_id")
+        return "a line"
+
+    import main as main_module
+
+    old = (main_module.bot, main_module._channel_is_shared,
+           main_module._last_human_at, main_module._read_news,
+           main_module._recent_messages, main_module._channel_roster,
+           main_module.bot_canonical_name, main_module.bot_name_variants,
+           storage.db_list_chat_channels, proactive.speak_once)
+    main_module.bot = FakeBot()
+    main_module._channel_is_shared = fake_is_shared
+    main_module._last_human_at = fake_last_human
+    main_module._read_news = fake_news
+    main_module._recent_messages = fake_recent
+    main_module._channel_roster = fake_roster
+    main_module.bot_canonical_name = lambda user: "Lain"
+    main_module.bot_name_variants = lambda user: ("lain", "lain2")
+    storage.db_list_chat_channels = fake_chat_channels
+    proactive.speak_once = fake_speak_once
+    main_module.SHARED_CHANNELS.clear()
+    try:
+        await main_module._tick_once()
+    finally:
+        (main_module.bot, main_module._channel_is_shared,
+         main_module._last_human_at, main_module._read_news,
+         main_module._recent_messages, main_module._channel_roster,
+         main_module.bot_canonical_name, main_module.bot_name_variants,
+         storage.db_list_chat_channels, proactive.speak_once) = old
+
+    check_true("the tick speaks in a room it has not seen since the deploy",
+               spoke.get("line") == "1569657875368902666")
+
+    # And a room that is not a room - one person, no history - is still
+    # left alone.
+    spoke.clear()
+    main_module.SHARED_CHANNELS.clear()
+
+    async def not_shared(cid, channel=None):
+        return False
+
+    old_shared = main_module._channel_is_shared
+    old_speak = proactive.speak_once
+    main_module._channel_is_shared = not_shared
+    proactive.speak_once = fake_speak_once
+    try:
+        await main_module._tick_once()
+    finally:
+        main_module._channel_is_shared = old_shared
+        proactive.speak_once = old_speak
+
+    check_true("a private chat is left alone", not spoke)
 
     print()
     print("=" * 70)
