@@ -321,6 +321,64 @@ def home():
     return "Bot is alive\n"
 
 
+@app.route("/proactive")
+def proactive_status():
+    """What the proactive tick thinks it is doing.
+
+    The tick is the quietest part of the bot. When it stops, nothing
+    happens and there is nothing to look at - so this is the outside view
+    of it: the settings, the clock, whether the tick is alive, and what
+    the gate says about each room. It is how a silence gets explained.
+    """
+    import time as _time
+
+    from proactive import gate, in_quiet_hours, state_for
+
+    out = []
+    try:
+        from config import (PROACTIVE_ENABLED, PROACTIVE_MAX_IDLE_MINUTES,
+                            PROACTIVE_MIN_GAP_MINUTES,
+                            PROACTIVE_MIN_IDLE_SECONDS,
+                            PROACTIVE_QUIET_HOURS, PROACTIVE_TICK_SECONDS)
+        out.append(f"enabled: {PROACTIVE_ENABLED}  tick: {PROACTIVE_TICK_SECONDS}s  "
+                   f"idle: {PROACTIVE_MIN_IDLE_SECONDS}s  gap: {PROACTIVE_MIN_GAP_MINUTES}m")
+        out.append(f"quiet hours: {PROACTIVE_QUIET_HOURS or 'none'}  "
+                   f"max idle: {PROACTIVE_MAX_IDLE_MINUTES or 'none'}m")
+    except Exception as exc:
+        out.append(f"settings: FAILED ({exc})")
+
+    local = _time.strftime("%Y-%m-%d %H:%M:%S %Z", _time.localtime())
+    utc = _time.strftime("%Y-%m-%d %H:%M:%S", _time.gmtime())
+    out.append(f"local: {local}   utc: {utc}   TZ env: "
+               f"{os.environ.get('TZ', '(unset)')}")
+    try:
+        out.append(f"in quiet hours now: {in_quiet_hours(_time.localtime())}")
+    except Exception as exc:
+        out.append(f"quiet hours check failed: {exc}")
+
+    out.append(f"tick task: {'running' if TICK_TASK and not TICK_TASK.done() else 'NOT RUNNING'}")
+    out.append(f"rooms known in memory: {list(SHARED_CHANNELS.keys()) or 'none'}")
+
+    try:
+        channels = asyncio.run(db_list_chat_channels())
+    except Exception as exc:
+        channels = []
+        out.append(f"chat channels: FAILED ({exc})")
+    else:
+        out.append(f"chat channels: {channels}")
+
+    now = _time.time()
+    for cid in channels:
+        state = state_for(cid)
+        ok, why = gate(cid, now=now)
+        last = state.last_human
+        idle = f"{(now - last) / 60:.0f}m" if last else "never"
+        out.append(f"  {cid}: shared={SHARED_CHANNELS.get(str(cid))} "
+                   f"idle={idle} gate={ok} ({why})")
+
+    return "\n".join(out) + "\n"
+
+
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 3000)))
 
@@ -553,6 +611,29 @@ async def chatmode(ctx, action: str):
     )
 
 
+@bot.command(name="proactive")
+async def proactive_cmd(ctx):
+    """What the proactive tick is doing. Usage: !proactive"""
+    from proactive import gate, state_for
+
+    out = []
+    try:
+        from config import (PROACTIVE_ENABLED, PROACTIVE_QUIET_HOURS,
+                            PROACTIVE_TICK_SECONDS)
+        out.append(f"on: {PROACTIVE_ENABLED}  tick: {PROACTIVE_TICK_SECONDS}s  "
+                   f"quiet hours: {PROACTIVE_QUIET_HOURS or 'none'}")
+    except Exception as exc:
+        out.append(f"settings: FAILED ({exc})")
+    out.append(f"tick task: {'running' if TICK_TASK and not TICK_TASK.done() else 'NOT RUNNING'}")
+    out.append(f"local time: {time.strftime('%H:%M:%S %Z', time.localtime())}")
+    now = time.time()
+    state = state_for(str(ctx.channel.id))
+    idle = f"{(now - state.last_human) / 60:.0f} minutes" if state.last_human else "never"
+    ok, why = gate(str(ctx.channel.id), now=now)
+    out.append(f"this room: idle {idle}  gate: {ok} ({why})")
+    await send_long(ctx, "\n".join(out))
+
+
 @bot.command(name="test_piston")
 async def test_piston(ctx):
     """Test if the code execution sandbox is working. Usage: !test_piston"""
@@ -723,6 +804,43 @@ async def _tick_once():
             print(f"proactive: could not speak in {cid}: {exc}")
 
 
+def _start_tick():
+    """Start the proactive tick, once.
+
+    This is its own function, and it reads its settings from config
+    rather than from anywhere else, because it used to be a line inside
+    on_ready that imported the settings from the wrong module - and the
+    ImportError killed on_ready at the end, so the bot logged in, answered
+    messages, and never once looked for a moment to speak. The tick is
+    the quietest part of the bot, so nothing said anything was wrong.
+    """
+    global TICK_TASK
+
+    try:
+        from config import (PROACTIVE_ENABLED, PROACTIVE_MAX_IDLE_MINUTES,
+                            PROACTIVE_MIN_GAP_MINUTES,
+                            PROACTIVE_MIN_IDLE_SECONDS,
+                            PROACTIVE_QUIET_HOURS, PROACTIVE_TICK_SECONDS)
+    except Exception as exc:
+        print(f"proactive: could not read the settings: {exc}")
+        return
+
+    print(f"proactive: tick every {PROACTIVE_TICK_SECONDS}s, "
+          f"idle {PROACTIVE_MIN_IDLE_SECONDS}s, "
+          f"gap {PROACTIVE_MIN_GAP_MINUTES}m, "
+          f"quiet hours {PROACTIVE_QUIET_HOURS or 'none'}, "
+          f"max idle {PROACTIVE_MAX_IDLE_MINUTES or 'none'} minutes")
+
+    if not PROACTIVE_ENABLED:
+        print("proactive ticking: disabled")
+        return
+
+    if TICK_TASK is not None and not TICK_TASK.done():
+        return
+
+    TICK_TASK = asyncio.create_task(_pro_active_tick())
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
@@ -794,24 +912,7 @@ async def on_ready():
 
     # Start the proactive tick. It runs in the background while the bot
     # stays responsive. If it is disabled, it simply does nothing.
-    global TICK_TASK
-
-    from proactive import (PROACTIVE_ENABLED, PROACTIVE_MAX_IDLE_MINUTES,
-                           PROACTIVE_MIN_GAP_MINUTES,
-                           PROACTIVE_MIN_IDLE_SECONDS,
-                           PROACTIVE_QUIET_HOURS, PROACTIVE_TICK_SECONDS)
-
-    print(f"proactive: tick every {PROACTIVE_TICK_SECONDS}s, "
-          f"idle {PROACTIVE_MIN_IDLE_SECONDS}s, "
-          f"gap {PROACTIVE_MIN_GAP_MINUTES}m, "
-          f"quiet hours {PROACTIVE_QUIET_HOURS or 'none'}, "
-          f"max idle {PROACTIVE_MAX_IDLE_MINUTES or 'none'} minutes")
-
-    if PROACTIVE_ENABLED:
-        if TICK_TASK is None or TICK_TASK.done():
-            TICK_TASK = asyncio.create_task(_pro_active_tick())
-    else:
-        print("proactive ticking: disabled")
+    _start_tick()
 
 
 @bot.event

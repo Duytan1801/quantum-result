@@ -255,6 +255,23 @@ async def main():
 
     check_true("a private chat is left alone", not spoke)
 
+    # The tick has to actually start. It used to be started by a line
+    # inside on_ready that imported its settings from the wrong module,
+    # and the ImportError killed on_ready at the end - so the bot logged
+    # in, answered messages, and never once looked for a moment to speak.
+    import main as main_module
+
+    old_task = main_module.TICK_TASK
+    main_module.TICK_TASK = None
+    try:
+        main_module._start_tick()
+        started = main_module.TICK_TASK
+        check_true("the tick starts", started is not None and not started.done())
+        if started is not None:
+            started.cancel()
+    finally:
+        main_module.TICK_TASK = old_task
+
     print()
     print("=" * 70)
     print(f"{PASSED} passed, {len(FAILED)} failed")
