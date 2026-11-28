@@ -501,23 +501,33 @@ async def run_code(ctx, language: str = "python", *, code: str):
     """Run a snippet. Usage: !run python print("hello")"""
     files = []
     async with ctx.typing():
-        if language.lower() in ("python", "python3", "py") \
-                and not getattr(config, "DAYTONA_API_KEY", ""):
-            # The fast sandbox is only there when Daytona is configured.
-            # Without it, Kaggle runs the snippet - slower, but it works,
-            # and it has the network the sandbox does not have.
-            import kaggle_backend
+        if language.lower() in ("python", "python3", "py"):
+            if not getattr(config, "DAYTONA_API_KEY", ""):
+                # The fast sandbox is only there when Daytona is configured.
+                # Without it, Kaggle runs the snippet - slower, but it works,
+                # and it has the network the sandbox does not have.
+                import kaggle_backend
 
-            state_dir = os.path.join(BASE_DIR, "kaggle", str(ctx.author.id))
-            result = await kaggle_backend.run_code(
-                code, timeout=600, state_dir=state_dir)
-            text = kaggle_backend.format_output(
-                result, state_rel=os.path.relpath(state_dir, BASE_DIR))
-            files = [f.get("saved_path") or f.get("path")
-                     for f in result.get("files") or []
-                     if not (f.get("name") or "").endswith(".log")]
+                state_dir = os.path.join(BASE_DIR, "kaggle", str(ctx.author.id))
+                result = await kaggle_backend.run_code(
+                    code, timeout=600, state_dir=state_dir)
+                text = kaggle_backend.format_output(
+                    result, state_rel=os.path.relpath(state_dir, BASE_DIR))
+                files = [f.get("saved_path") or f.get("path")
+                         for f in result.get("files") or []
+                         if not (f.get("name") or "").endswith(".log")]
+            else:
+                text = await run_code_in_sandbox(code, language)
         else:
-            text = await run_code_in_sandbox(code, language)
+            if not getattr(config, "DAYTONA_API_KEY", ""):
+                # Only Kaggle runs Python, so the other languages have
+                # nowhere to go. Say that, rather than "code execution is
+                # unavailable", which reads like the bot is broken.
+                text = ("Only Python can be run right now - the sandbox that "
+                        "runs JavaScript, TypeScript and shell is not "
+                        "configured. Run it as Python instead.")
+            else:
+                text = await run_code_in_sandbox(code, language)
     await send_long(ctx, text, code_block=True)
     if files:
         await attach_images(ctx, [f for f in files if f and os.path.exists(f)])
@@ -827,7 +837,6 @@ async def kaggle_cmd(ctx):
     lines = [f"**Kaggle status**"]
     lines.append(f"- Env var `KAGGLE_API_TOKEN` set: {status['env_KAGGLE_API_TOKEN_set']}")
     lines.append(f"- Credentials source: {status['credentials_source'] or 'none'}")
-    lines.append(f"- Hardcoded fallback present: {status['hardcoded_fallback_present']}")
     lines.append(f"- Legacy key pair present: {status['legacy_key_present']}")
     lines.append(f"- Config file present: {status['config_file_present']}")
     if status["authenticated"]:
@@ -847,7 +856,8 @@ async def kaggle_cmd(ctx):
 
     if quota:
         if quota.get("error"):
-            lines.append(f"- GPU this week: unknown — {quota['error']}")
+            lines.append("- GPU this week: unknown — the quota comes from the "
+                         "same service that refuses the kernel runs.")
         else:
             lines.append(f"- GPU this week: {quota.get('gpu_used', '?')} of "
                          f"{quota.get('gpu_total', '?')}")
