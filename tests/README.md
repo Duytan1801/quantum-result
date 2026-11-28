@@ -26,6 +26,9 @@ exported by hand.
 | `probe_tool_retry.py` | that a real job is looked up rather than answered from memory, every time |
 | `probe_personal_deep.py` | that a message about somebody's day is *not* turned into a search, and that the reply is still warm |
 | `decision_on_log.py` | the whole decision over the real channel history, with what the bot actually did next to it |
+| `test_proactive.py` | the proactive half: the tick, the gate, the moment decision, and the guards that stop the bot repeating itself or copying the examples |
+| `test_model_command.py` | choosing the model that answers, per room: the chosen model goes first in the chain, the others stay behind it as fallbacks |
+| `test_kaggle.py` | the Kaggle backend, without touching the network: the pip preamble, the missing-package retry, the quota, the network diagnosis, the file collection, and the credential refusal |
 
 `decision_on_log.py` needs `DISCORD_TOKEN` and a copy of the channel
 history. It reads one from `CHANNEL_LOG` (default
