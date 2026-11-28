@@ -4,6 +4,8 @@ import os
 import shutil
 import tempfile
 
+from people import address_mentions, neutralise_mass_mentions
+
 # Discord rejects messages over 2000 characters, so long replies are split
 # into several messages instead of being cut off mid-sentence.
 DISCORD_MAX_LEN = 2000
@@ -65,7 +67,7 @@ def split_message(text: str, max_len: int = DISCORD_MAX_LEN) -> list[str]:
 
 
 async def send_long(target, content: str, code_block: bool = False, footer: str = None,
-                   render_math: bool = True):
+                   render_math: bool = True, allowed_mentions=None):
     """Send content to a channel/context, splitting it across messages if needed.
 
     `target` may be a CommandContext (uses .send) or a Message (first chunk is
@@ -74,6 +76,11 @@ async def send_long(target, content: str, code_block: bool = False, footer: str 
     Unless `code_block` is set, LaTeX math is rendered: display equations
     become images attached next to the text they belong to, and inline maths
     becomes Unicode.
+
+    `allowed_mentions` overrides who may be pinged. Without it, the tags in
+    the message decide: a tag that addresses somebody pings them, and
+    nothing else pings anybody - the server-wide mentions are taken out of
+    the message before it is sent.
 
     Returns the list of messages that were sent, so the caller can remember
     that they were the bot's own (a reply to one of them is for the bot).
@@ -88,6 +95,20 @@ async def send_long(target, content: str, code_block: bool = False, footer: str 
     # reply when the whole of it was scaffolding.
     if not (content or "").strip():
         return sent
+
+    # The tags. A tag at the front of the message is an address and pings;
+    # one further down is somebody being talked about, and is written out
+    # as a name. The server-wide pings never survive.
+    content, pings = address_mentions(content)
+    content = neutralise_mass_mentions(content)
+    if allowed_mentions is None:
+        # The ids have to be objects with an ".id" - discord.py reads the
+        # attribute, not the value, so a list of plain strings raises
+        # when the message is sent.
+        allowed_mentions = discord.AllowedMentions(
+            users=[discord.Object(id=int(user_id))
+                   for user_id in pings if str(user_id).isdigit()],
+            roles=False, everyone=False, replied_user=True)
 
     parts = [("text", content)]
     if render_math and not code_block:
@@ -159,16 +180,19 @@ async def send_long(target, content: str, code_block: bool = False, footer: str 
 
             try:
                 if first and hasattr(target, "reply"):
-                    sent.append(await target.reply(value))
+                    sent.append(await target.reply(value,
+                                                   allowed_mentions=allowed_mentions))
                 else:
-                    sent.append(await _send(target, value))
+                    sent.append(await _send(target, value,
+                                            allowed_mentions=allowed_mentions))
             except Exception as exc:
                 # One message that Discord will not accept must not cost the
                 # user the rest of the answer.
                 print(f"could not send a message part: {exc}")
                 try:
                     sent.append(await _send(
-                        target, f"⚠️ A part of this reply failed to send: {exc}"))
+                        target, f"⚠️ A part of this reply failed to send: {exc}",
+                        allowed_mentions=allowed_mentions))
                 except Exception:
                     pass
             first = False

@@ -22,6 +22,7 @@ from agent import get_nvidia_response_full
 from discord_utils import send_long
 from agents import AGENTS, get_agent
 from jobs import cancel_job, job_label, list_jobs, start_agent_task
+import people as people_registry
 from people import (
     bot_canonical_name,
     bot_name_variants,
@@ -32,6 +33,7 @@ from people import (
 )
 from presence import ChannelTracker, WAIT_SECONDS, channel_scope, decide
 from scopes import scope_plan
+import schedule as schedule_module
 from config import (ANSWER_RETRY_ATTEMPTS, ANSWER_RETRY_DELAY,
                     NEWS_CHANNEL_ID, NEWS_MAX_AGE_HOURS, is_detached)
 import config
@@ -57,7 +59,25 @@ from tools import BASE_DIR, safe_path, web_search, wolfram_alpha
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+
+# What the bot is allowed to ping.
+#
+# Discord's own default parses every mention in a message, so a message
+# that quoted somebody's "@everyone" - or a role tag - would wake the
+# whole server. The bot has no business doing that: it is not an
+# announcement service, and the one thing it must never do is wake
+# sixty people by accident.
+#
+# So the server-wide pings are off for every message the bot sends, and
+# the only thing that can ping is a person the message is actually
+# addressed to. The per-message allowed_mentions in discord_utils works
+# out who that is.
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents,
+    allowed_mentions=discord.AllowedMentions(
+        users=True, roles=False, everyone=False, replied_user=True),
+)
 
 # Who has spoken in each channel. A channel with two or more people in it is
 # a room, not a private conversation: the bot waits to be spoken to, and the
@@ -398,6 +418,13 @@ def proactive_status():
         out.append(f"quiet hours check failed: {exc}")
 
     out.append(f"tick task: {_tick_state()}")
+    out.append(f"schedule tick: {_schedule_state()}")
+    try:
+        from schedule import now_vietnam
+
+        out.append(f"vietnam time: {now_vietnam().strftime('%Y-%m-%d %H:%M:%S')}")
+    except Exception as exc:
+        out.append(f"vietnam time: FAILED ({exc})")
     out.append(f"on_ready: called={READY.get('called')} at="
                f"{time.strftime('%H:%M:%S', time.localtime(READY['at'])) if READY.get('at') else '-'}"
                f" error={READY.get('error') or 'none'}")
@@ -572,6 +599,170 @@ async def agents_cmd(ctx):
     """List the specialist agents. Usage: !agents"""
     lines = [f"`{name}` ({spec['label']}) — {spec['description']}" for name, spec in AGENTS.items()]
     await ctx.send("**Agents**\n" + "\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# The schedule
+# ---------------------------------------------------------------------------
+#
+# A message the bot sends at a time Damian chose. The command sets it,
+# the tick sends it, and the schedule lives in the database so a restart
+# does not lose it.
+
+SCHEDULE_TASK: asyncio.Task | None = None
+
+SCHEDULE_HELP = (
+    "**schedule** — a message I send at a time you choose\n"
+    "`!schedule <time> <days> to <person>: <message>`\n"
+    "  `!schedule 8:00 daily to jade: good morning`\n"
+    "  `!schedule 20:00 weekdays to 909453181916938301: standup at 8`\n"
+    "  `!schedule 9:30 mon,wed,fri to jade: ... in #model`\n"
+    "Times are Vietnam's. A bare hour is a 24-hour one (`20` is eight in "
+    "the evening); `8pm` works too.\n"
+    "Days: `daily`, `weekdays`, `weekends`, or a list (`mon,tue`).\n"
+    "It goes to the person privately, unless you say `in #room`, and then "
+    "it is posted there with their tag.\n"
+    "`!schedule list` — what is set. `!schedule clear <id>` — remove one."
+)
+
+
+def _schedule_from_row(row: dict) -> dict:
+    """A stored schedule, in the shape the schedule module expects."""
+    days = [int(part) for part in str(row.get("days") or "").split(",")
+            if part.strip().isdigit()]
+    return {
+        "id": row.get("id") or "",
+        "hour": int(row.get("hour") or 0),
+        "minute": int(row.get("minute") or 0),
+        "days": days or list(schedule_module.EVERY_DAY),
+        "to": row.get("to") or "",
+        "to_name": row.get("to_name") or "",
+        "message": row.get("message") or "",
+        "where": row.get("where") or "dm",
+        "channel": row.get("channel") or "",
+        "owner": row.get("owner") or "",
+        "set_in": row.get("set_in") or "",
+        "fired": row.get("fired") or "",
+    }
+
+
+async def _resolve_schedule_person(name: str) -> tuple[str, str]:
+    """Who a schedule is for, as (id, name).
+
+    A name is looked up among the people the bot has met, and an id is
+    taken as it is. The people are read from the channels themselves, so
+    a name nobody is listed in the code still works.
+
+    The two people the room is built around - Damian and Jade - are also
+    in the configuration, so a schedule for Jade can be set even in a
+    room where she has not spoken for a week.
+    """
+    raw = (name or "").strip().lstrip("@").strip()
+    if not raw:
+        return "", ""
+
+    # An id is an id.
+    if raw.isdigit() and len(raw) >= 5:
+        entry = people_registry.SEEN.get(raw)
+        return raw, (entry or {}).get("plain") or raw
+
+    entry = people_registry.find_person(raw)
+    if entry:
+        return entry["id"], entry.get("plain") or entry.get("name") or raw
+
+    # The people in the configuration. Their names are the ones they go
+    # by in the room - "jade" and "damian" - and the bot has met them
+    # under those names.
+    wanted = raw.lower()
+    for user_id, configured_name in (
+            (getattr(config, "JADE_DISCORD_ID", ""), "jade"),
+            (getattr(config, "DAMIAN_DISCORD_ID", ""), "damian")):
+        if not user_id:
+            continue
+        if wanted in (configured_name, configured_name + "_m8"):
+            known = people_registry.SEEN.get(str(user_id))
+            return str(user_id), (known or {}).get("plain") or configured_name
+    return "", ""
+
+
+@bot.command(name="schedule")
+async def schedule_cmd(ctx, *, argument: str = ""):
+    """Set a message to send at a time. Usage: !schedule 8:00 daily to jade: hi"""
+    from storage import (db_delete_schedule, db_list_schedules,
+                         db_set_schedule, _schedule_id)
+
+    argument = (argument or "").strip()
+
+    if not argument or argument.lower() in ("help", "?"):
+        await ctx.send(SCHEDULE_HELP)
+        return
+
+    if argument.lower().startswith("list"):
+        rows = await db_list_schedules()
+        if not rows:
+            await ctx.send("Nothing is scheduled.")
+            return
+        lines = [f"`{row['id']}` {schedule_module.describe(_schedule_from_row(row))}"
+                 for row in rows]
+        await ctx.send("**Scheduled**\n" + "\n".join(lines))
+        return
+
+    if argument.lower().startswith("clear"):
+        parts = argument.split()
+        if len(parts) < 2:
+            await ctx.send("Which one? `!schedule clear <id>` — "
+                           "`!schedule list` shows the ids.")
+            return
+        await db_delete_schedule(parts[1].strip())
+        await ctx.send(f"Removed `{parts[1].strip()}`.")
+        return
+
+    try:
+        parsed = schedule_module.parse(argument)
+    except schedule_module.ScheduleError as exc:
+        await ctx.send(f"{exc}\n\n{SCHEDULE_HELP}")
+        return
+
+    to_id, to_name = await _resolve_schedule_person(parsed["to"])
+    if not to_id:
+        await ctx.send(f"I do not know who '{parsed['to']}' is. Give me the "
+                       "name somebody in the room goes by, or their Discord id.")
+        return
+
+    # The room a message posted in one has to be found again.
+    channel_id = ""
+    if parsed["where"] == "channel":
+        wanted = parsed["channel"].strip().lower()
+        found = None
+        for channel in getattr(ctx.guild, "text_channels", []):
+            if channel.name.lower() == wanted:
+                found = channel
+                break
+        if found is None:
+            await ctx.send(f"I cannot see a channel called '{parsed['channel']}'.")
+            return
+        channel_id = str(found.id)
+
+    schedule_id = _schedule_id()
+    await db_set_schedule(schedule_id, {
+        "hour": parsed["hour"],
+        "minute": parsed["minute"],
+        "days": ",".join(str(d) for d in parsed["days"]),
+        "to": to_id,
+        "to_name": to_name,
+        "message": parsed["message"],
+        "where": parsed["where"],
+        "channel": channel_id,
+        "owner": str(ctx.author.id),
+        "set_in": str(ctx.channel.id),
+        "fired": "",
+    })
+
+    where = ("privately" if parsed["where"] == "dm"
+             else f"in #{parsed['channel']}")
+    await ctx.send(f"Set `{schedule_id}` — {schedule_module.format_time(parsed)} "
+                   f"{schedule_module.format_days(parsed)}, to {to_name} "
+                   f"{where}.")
 
 
 @bot.command(name="jobs")
@@ -1070,6 +1261,172 @@ def _tick_state() -> str:
     return f"finished, and it died: {error!r}" if error else "finished"
 
 
+# ---------------------------------------------------------------------------
+# The schedule tick
+# ---------------------------------------------------------------------------
+#
+# A different job from the proactive tick: that one looks for a moment
+# to speak, and this one sends a message somebody asked to be sent at a
+# time. It is quiet for almost every minute of the day.
+
+SCHEDULE_TICK_SECONDS = 20
+
+
+def _schedule_state() -> str:
+    """Is the schedule tick running, and if not, why not."""
+    task = SCHEDULE_TASK
+    if task is None:
+        return "never started"
+    if not task.done():
+        return "running"
+    if task.cancelled():
+        return "cancelled"
+    error = task.exception()
+    return f"finished, and it died: {error!r}" if error else "finished"
+
+
+async def _send_scheduled(schedule: dict) -> str:
+    """Send one scheduled message. Returns what happened.
+
+    It goes to the person privately, as it was written. If their direct
+    messages are closed, the message goes to the room it was set in
+    instead, with their tag on it, and the person who set it is told
+    that the private message did not get through - a message that
+    silently goes nowhere is worse than one that arrives late.
+    """
+    from storage import db_set_schedule
+
+    to_id = str(schedule.get("to") or "")
+    if not to_id:
+        return "failed"
+
+    message = schedule.get("message") or ""
+    if not message.strip():
+        return "failed"
+
+    # Only the person the message is for may be pinged by it. The id has
+    # to be an object with an ".id" - discord.py reads the attribute.
+    allowed = discord.AllowedMentions(
+        users=[discord.Object(id=int(to_id))] if to_id.isdigit() else [],
+        roles=False, everyone=False, replied_user=False)
+
+    where = schedule.get("where") or "dm"
+
+    if where == "dm":
+        try:
+            user = bot.get_user(int(to_id))
+            if user is None:
+                user = await bot.fetch_user(int(to_id))
+            await user.send(message, allowed_mentions=allowed)
+            return "sent privately"
+        except discord.Forbidden:
+            print(f"schedule: could not send privately to {to_id} - DMs are closed")
+        except discord.HTTPException as exc:
+            print(f"schedule: could not send privately to {to_id}: {exc}")
+        except Exception as exc:
+            print(f"schedule: could not send privately to {to_id}: {exc}")
+
+        # The private message did not get through. Post it where it was
+        # set, with the tag, so it is not lost.
+        set_in = str(schedule.get("set_in") or "")
+        channel = bot.get_channel(int(set_in)) if set_in.isdigit() else None
+        if channel is None:
+            return "failed"
+        tag = f"<@{to_id}>"
+        await channel.send(f"{tag} {message}", allowed_mentions=allowed)
+        return "posted in the room instead"
+
+    # Posted in a room, with the tag so it is a message to them.
+    channel_id = str(schedule.get("channel") or "")
+    channel = bot.get_channel(int(channel_id)) if channel_id.isdigit() else None
+    if channel is None:
+        return "failed"
+    tag = f"<@{to_id}>"
+    await channel.send(f"{tag} {message}", allowed_mentions=allowed)
+    return "posted"
+
+
+async def _schedules_once() -> int:
+    """Send every schedule that is due. Returns how many went out."""
+    from storage import db_list_schedules, db_set_schedule
+
+    try:
+        rows = await db_list_schedules()
+    except Exception as exc:
+        print(f"schedule: could not read the schedules: {exc}")
+        return 0
+
+    if not rows:
+        return 0
+
+    now = schedule_module.now_vietnam()
+    sent = 0
+
+    for row in rows:
+        schedule = _schedule_from_row(row)
+        if not schedule_module.is_due(schedule, now):
+            continue
+
+        # Once a day, not once a tick. The mark is the moment the message
+        # was for - not the moment the attempt was made - so the grace
+        # window cannot send it a second time, and it is kept in the
+        # database, so a restart in the middle of the minute does not
+        # send it again.
+        stamp = schedule_module.day_stamp(
+            schedule_module.target_time(schedule, now))
+        if schedule.get("fired") == stamp:
+            continue
+
+        try:
+            outcome = await _send_scheduled(schedule)
+        except Exception as exc:
+            print(f"schedule: {schedule.get('id')} failed: {exc}")
+            outcome = "failed"
+
+        if outcome != "failed":
+            sent += 1
+        print(f"schedule: {schedule.get('id')} at "
+              f"{schedule_module.format_time(schedule)} -> {outcome}")
+
+        # The mark is written even when the message failed, so a broken
+        # schedule does not turn into a message every twenty seconds.
+        # It is written with the time of the schedule, not the time of
+        # the attempt, so the day is the day it was for.
+        await db_set_schedule(schedule["id"], {"fired": stamp})
+
+    return sent
+
+
+async def _schedule_tick():
+    """Look for a schedule that is due, every twenty seconds."""
+    while True:
+        try:
+            await _schedules_once()
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            print(f"schedule tick error: {exc}")
+        try:
+            await asyncio.sleep(SCHEDULE_TICK_SECONDS)
+        except asyncio.CancelledError:
+            break
+
+
+def _start_schedule_tick():
+    """Start the schedule tick, once."""
+    global SCHEDULE_TASK
+
+    if SCHEDULE_TASK is not None and not SCHEDULE_TASK.done():
+        return
+
+    try:
+        SCHEDULE_TASK = asyncio.create_task(_schedule_tick())
+    except Exception as exc:
+        print(f"could not start the schedule tick: {exc}")
+        return
+    print("schedule tick: started")
+
+
 def _start_tick():
     """Start the proactive tick, once.
 
@@ -1113,6 +1470,27 @@ def _start_tick():
     TICK_TASK = asyncio.create_task(_pro_active_tick())
 
 
+def _remember_known_people():
+    """Keep the two people the room is built around in the registry.
+
+    The roster is read from the channel's own messages, so the bot
+    knows everybody it has heard speak. But a tag for somebody it has
+    not heard from lately would then be a tag it cannot resolve - and
+    a tag it cannot resolve is a tag it does not send, because it
+    would be a ping it did not mean. So the two people in the
+    configuration are put in the registry when the bot starts, and the
+    real names replace them the moment the room is read.
+    """
+    for user_id, name in ((getattr(config, "JADE_DISCORD_ID", ""), "jade"),
+                           (getattr(config, "DAMIAN_DISCORD_ID", ""), "damian")):
+        if not user_id:
+            continue
+        if people_registry.SEEN.get(str(user_id)):
+            continue
+        people_registry.remember({"id": str(user_id), "name": name,
+                                   "plain": name})
+
+
 @bot.event
 async def on_ready():
     global READY
@@ -1121,6 +1499,13 @@ async def on_ready():
     READY["at"] = time.time()
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
+    # The people in the registry, so a tag can be resolved even before
+    # the bot has read a single message.
+    try:
+        _remember_known_people()
+    except Exception as exc:
+        print(f"could not remember the known people: {exc}")
+
     # The tick starts first, before anything else in here. It is the
     # quietest part of the bot, and everything below it is a report - a
     # report that fails must not be able to stop the bot from talking.
@@ -1128,6 +1513,18 @@ async def on_ready():
         _start_tick()
     except Exception as exc:
         READY["error"] = f"the tick did not start: {exc}"
+        traceback.print_exc()
+
+    # The schedule tick is a separate job from the proactive one: that
+    # one looks for a moment to speak, and this one sends a message
+    # somebody asked to be sent at a time. It is quiet for almost every
+    # minute of the day, and it is started here for the same reason the
+    # proactive tick is - a failure to start it must not stop the rest
+    # of the bot from working.
+    try:
+        _start_schedule_tick()
+    except Exception as exc:
+        READY["schedule_error"] = f"the schedule tick did not start: {exc}"
         traceback.print_exc()
 
     # The proactive button keeps working after a restart: the view is

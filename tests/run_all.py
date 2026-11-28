@@ -37,6 +37,8 @@ QUICK = [
     "test_proactive.py",
     "test_model_command.py",
     "test_kaggle.py",
+    "test_schedule.py",
+    "test_mentions.py",
 ]
 
 LIVE = [

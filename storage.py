@@ -6,6 +6,7 @@ EVERY user. Always filter with an exact ``eq.`` value, never a LIKE pattern.
 """
 
 import asyncio
+import uuid
 
 from config import HISTORY_ROWS, supabase
 
@@ -309,6 +310,42 @@ async def db_get_user_facts_multi(user_ids) -> dict:
     return {r["fact_key"]: r["fact_value"] for r in rows}
 
 
+async def db_get_facts_by_scope(scopes) -> dict:
+    """The facts of several scopes at once, as scope -> {key: value}.
+
+    The flat version of this (db_get_user_facts_multi) throws the scope
+    away, which is fine for the memory and useless for the schedules:
+    every schedule has the same keys, so without the scope there is no
+    way to tell whose "message" is whose.
+    """
+    ids = [str(s) for s in (scopes or []) if s is not None]
+    if not ids:
+        return {}
+
+    def _fetch():
+        try:
+            resp = (
+                supabase.table("user_facts")
+                .select("user_id, fact_key, fact_value")
+                .in_("user_id", ids)
+                .execute()
+            )
+        except Exception as e:
+            if "42703" in str(e) or "column" in str(e).lower() or "404" in str(e):
+                return []
+            raise
+        return resp.data or []
+
+    rows = await asyncio.to_thread(_fetch)
+    out: dict[str, dict] = {}
+    for row in rows or []:
+        scope = str(row.get("user_id") or "")
+        if not scope:
+            continue
+        out.setdefault(scope, {})[row.get("fact_key")] = row.get("fact_value")
+    return out
+
+
 async def db_get_fact(user_id, key):
     """Return a single stored fact value, or None if it does not exist."""
     facts = await db_get_user_facts(user_id)
@@ -339,6 +376,107 @@ async def db_get_room_model(channel_id: str) -> str:
     except Exception:
         return ""
     return str(value or "")
+
+
+# ---------------------------------------------------------------------------
+# Schedules
+# ---------------------------------------------------------------------------
+#
+# A schedule is a message the bot sends at a time Damian chose. It lives
+# in the facts table under a scope of its own, in the settings namespace:
+#
+#     setting:schedule:<id>   at, days, to, message, where, channel, ...
+#
+# The same trick the room's model uses. It is a setting, not a memory -
+# it is never read into a prompt - so a private message does not become
+# something the model knows and can repeat somewhere else. And it is
+# keyed by its own id, so one schedule can be edited or deleted without
+# touching the others.
+#
+# The list of schedules is itself a row - "setting:schedules" - rather
+# than a LIKE over the scopes. This table's user_id is a text column, so
+# a pattern like "setting:schedule:%" would be read as a pattern and
+# not as the prefix it looks like; the index is read with an exact
+# match and the scopes are then fetched with "in", which is exact.
+
+SCHEDULE_SETTING_PREFIX = "setting:schedule:"
+SCHEDULE_INDEX_SCOPE = "setting:schedules"
+SCHEDULE_INDEX_KEY = "ids"
+
+
+def _schedule_id() -> str:
+    """A new schedule id."""
+    return "s" + uuid.uuid4().hex[:10]
+
+
+async def _schedule_ids() -> list[str]:
+    """The ids of every schedule that has been set."""
+    try:
+        value = await db_get_fact(SCHEDULE_INDEX_SCOPE, SCHEDULE_INDEX_KEY)
+    except Exception:
+        return []
+    return [part for part in str(value or "").split(",") if part]
+
+
+async def db_set_schedule(schedule_id: str, fields: dict):
+    """Store a schedule, or change one."""
+    scope = f"{SCHEDULE_SETTING_PREFIX}{schedule_id}"
+    for key, value in (fields or {}).items():
+        await db_set_fact(scope, key, "" if value is None else str(value))
+
+    ids = await _schedule_ids()
+    if schedule_id not in ids:
+        ids.append(schedule_id)
+        await db_set_fact(SCHEDULE_INDEX_SCOPE, SCHEDULE_INDEX_KEY,
+                          ",".join(ids))
+
+
+async def db_get_schedule(schedule_id: str) -> dict:
+    """One schedule, as a dict of its fields."""
+    try:
+        facts = await db_get_user_facts(f"{SCHEDULE_SETTING_PREFIX}{schedule_id}")
+    except Exception:
+        return {}
+    return {k: str(v) for k, v in (facts or {}).items()}
+
+
+async def db_list_schedules() -> list[dict]:
+    """Every schedule that has been set."""
+    ids = await _schedule_ids()
+    if not ids:
+        return []
+
+    scopes = [f"{SCHEDULE_SETTING_PREFIX}{schedule_id}" for schedule_id in ids]
+    try:
+        facts = await db_get_facts_by_scope(scopes)
+    except Exception:
+        return []
+
+    out = []
+    for schedule_id in ids:
+        fields = facts.get(f"{SCHEDULE_SETTING_PREFIX}{schedule_id}") or {}
+        if not fields:
+            continue
+        out.append({"id": schedule_id,
+                    **{k: str(v) for k, v in fields.items()}})
+    return out
+
+
+async def db_delete_schedule(schedule_id: str):
+    """Forget a schedule."""
+    scope = f"{SCHEDULE_SETTING_PREFIX}{schedule_id}"
+    try:
+        facts = await db_get_user_facts(scope)
+    except Exception:
+        facts = {}
+    for key in list(facts or {}):
+        await db_delete_fact(scope, key)
+
+    ids = await _schedule_ids()
+    if schedule_id in ids:
+        ids.remove(schedule_id)
+        await db_set_fact(SCHEDULE_INDEX_SCOPE, SCHEDULE_INDEX_KEY,
+                          ",".join(ids))
 
 
 async def db_add_message(user_id, role, content, tool_calls=None, tool_call_id=None, name=None):

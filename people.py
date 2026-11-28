@@ -24,6 +24,87 @@ def plain_name(text: str) -> str:
     return unicodedata.normalize("NFKC", str(text)).strip()
 
 
+# Everybody the bot has met, wherever it met them. The roster is per
+# channel - a name means the same person in every channel, but a room is
+# only the people who speak in it - so this is the wider memory: a
+# schedule set in one room can be about somebody who only ever speaks in
+# another.
+SEEN: dict[str, dict] = {}
+
+
+def remember(entry: dict) -> dict | None:
+    """Remember one person, so a name can be resolved later."""
+    if not isinstance(entry, dict):
+        return None
+    user_id = str(entry.get("id") or "")
+    if not user_id:
+        return None
+    known = {
+        "id": user_id,
+        "name": entry.get("name") or "",
+        "plain": entry.get("plain") or plain_name(entry.get("name") or ""),
+    }
+    SEEN[user_id] = known
+    return known
+
+
+def _name_tokens(text: str) -> list[str]:
+    """The words a name is made of.
+
+    A Discord name is often "jade_m8" or "LainWasHere", and people ask
+    for each other by one piece of it - so a name is matched by its
+    parts as well as by itself.
+    """
+    plain = plain_name(str(text or "")).lower()
+    return [part for part in re.split(r"[^a-z0-9]+", plain) if part]
+
+
+def find_person(name: str) -> dict | None:
+    """The person with this name, if the bot has met them.
+
+    The name is matched the way people write it: the styled form and the
+    plain form are the same name, the comparison ignores case and
+    spaces, and a name matches a part of somebody's name - "jade" is
+    how she is asked for, even though she goes by "jade_m8". An id is
+    accepted too, because that is the one form that is never wrong.
+    """
+    if not name:
+        return None
+    want = plain_name(str(name)).strip().lower()
+    if not want:
+        return None
+
+    for entry in SEEN.values():
+        if entry["id"] == want:
+            return entry
+
+    for entry in SEEN.values():
+        for value in (entry.get("plain"), entry.get("name")):
+            if not value:
+                continue
+            plain = plain_name(str(value)).strip().lower()
+            if not plain:
+                continue
+            if plain == want:
+                return entry
+            tokens = _name_tokens(value)
+            if want in tokens or plain in _name_tokens(want):
+                return entry
+    return None
+
+
+def mention_for(entry) -> str:
+    """The tag that pings this person.
+
+    It is a Discord user mention - "<@id>" - which is the only thing that
+    actually notifies anybody. Writing somebody's name does not.
+    """
+    if not isinstance(entry, dict):
+        return ""
+    user_id = str(entry.get("id") or "")
+    return f"<@{user_id}>" if user_id else ""
+
+
 def display_name(user) -> str:
     """The name to call somebody by."""
     for attr in ("display_name", "global_name", "name"):
@@ -49,6 +130,10 @@ def roster_from_messages(messages) -> list[dict]:
     The bot's own messages are skipped, and the first time somebody is seen
     is the time they are recorded - so the roster reads in the order the
     conversation actually happened.
+
+    Every person seen is also remembered by id, so a name can be resolved
+    later from anywhere - which is what a schedule needs when it is set in
+    one room and is about somebody who speaks in another.
     """
     people = []
     seen = set()
@@ -60,7 +145,9 @@ def roster_from_messages(messages) -> list[dict]:
         if not user_id or user_id in seen:
             continue
         seen.add(user_id)
-        people.append(person(author))
+        entry = person(author)
+        remember(entry)
+        people.append(entry)
     return people
 
 
@@ -251,3 +338,144 @@ def addresses_bot(text: str, names, exclude=()) -> bool:
         if re.search(rf"(?<![a-z]){re.escape(needle)}(?![a-z])", front):
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Mentions
+# ---------------------------------------------------------------------------
+#
+# Writing somebody's name does not notify anybody. The only thing that
+# does is a Discord user mention - "<@id>" - and only when the message
+# says that person is allowed to be mentioned.
+#
+# The model is allowed to write a tag when somebody has to see the
+# message. It is not allowed to write one because their name came up,
+# so there is a rule about where in the message a tag counts as an
+# address: a tag at the front is who you are talking to, a tag further
+# down is who you are talking about. The second one is written out as
+# the person's name, and nobody is pinged.
+#
+# The tags themselves are safe by construction: Discord's own default
+# parses every mention in a message, so a message that quoted somebody's
+# "@everyone" would wake the whole server. The bot never allows that -
+# the server-wide pings are taken out of its words, and only the people
+# it means to ping are allowed.
+
+# A user mention, in either of the two forms Discord writes.
+_MENTION = re.compile(r"<@!?(\d{5,25})>")
+
+# How far into the message a tag still counts as an address.
+ADDRESS_WINDOW = 120
+
+# The words that can come before a tag and still leave it an address.
+# "hey <@Jade>" is addressed to her; "I told <@Jade>" is not.
+_GREETINGS = {
+    "hey", "hi", "hello", "yo", "oi", "ok", "okay", "well", "so",
+    "e", "em", "anh", "a", "everyone", "everybody", "all", "ps", "p.s.",
+    "mọi", "mọi người",
+}
+
+# The punctuation that can sit around a word.
+_EDGE = ".,!?¿¡:;…-–— \t\n"
+
+
+def _reads_as_address(text: str, start: int, entry) -> bool:
+    """Does this tag read as "I am talking to you", or as "about you"?
+
+    The model is told to start a message with somebody's tag when
+    they have to see it. So the tag is an address when it is the first
+    thing in the message, or when everything before it is a greeting or
+    the person's own name:
+
+        <@Jade> did you see this?      an address
+        hey <@Jade> did you see this?  an address
+        Jade, <@Jade> did you see this? an address
+        I told <@Jade> about it         somebody being talked about
+    """
+    prefix = text[:start].strip().strip(_EDGE).strip()
+    if not prefix:
+        return True
+
+    words = prefix.split()
+    if len(words) > 3:
+        return False
+
+    last = words[-1].strip(_EDGE)
+    if not last:
+        return False
+    if last.lower() in _GREETINGS:
+        return True
+
+    # The person's own name.
+    if entry:
+        for value in (entry.get("plain"), entry.get("name")):
+            if not value:
+                continue
+            plain = plain_name(str(value)).strip().lower()
+            if not plain:
+                continue
+            if last.lower() == plain or last.lower() in _name_tokens(value):
+                return True
+    return False
+
+
+def mentions_in(text: str) -> list[str]:
+    """The ids of everybody tagged in this text."""
+    return _MENTION.findall(text or "")
+
+
+def neutralise_mass_mentions(text: str) -> str:
+    """Take the server-wide pings out of the bot's own words.
+
+    "@everyone", "@here" and a role tag wake everybody in the channel.
+    The bot has no business doing that - it is not an announcement
+    service - so they are written out as plain words.
+    """
+    if not text:
+        return text
+    text = re.sub(r"<@&\d{5,25}>", "@a role", text)
+    text = re.sub(r"@everyone\b", "everyone", text, flags=re.IGNORECASE)
+    text = re.sub(r"@here\b", "here", text, flags=re.IGNORECASE)
+    return text
+
+
+def address_mentions(text: str, people: dict | None = None) -> tuple[str, list[str]]:
+    """Work out which tags in a message are an address, and keep only those.
+
+    Returns the text to send and the ids that may be pinged. A tag that
+    is not an address is written out as the person's name, so the message
+    still reads the way it was meant to - it just does not ping anybody.
+    """
+    if not text:
+        return text or "", []
+
+    lookup = people if people is not None else SEEN
+    out = []
+    pings = []
+    last = 0
+
+    for match in _MENTION.finditer(text):
+        user_id = match.group(1)
+        entry = lookup.get(user_id)
+        name = ""
+        if entry:
+            name = entry.get("plain") or entry.get("name") or ""
+
+        out.append(text[last:match.start()])
+        is_address = (
+            entry is not None
+            and match.start() <= ADDRESS_WINDOW
+            and _reads_as_address(text, match.start(), entry))
+        if is_address:
+            # It is an address: the tag stays, and the person may be pinged.
+            out.append(f"<@{user_id}>")
+            if user_id not in pings:
+                pings.append(user_id)
+        else:
+            # It is a mention in passing, or of somebody the bot has never
+            # met. The name is written out instead.
+            out.append(name or "@someone")
+        last = match.end()
+
+    out.append(text[last:])
+    return "".join(out), pings

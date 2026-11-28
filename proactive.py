@@ -918,7 +918,15 @@ async def speak_once(*, channel_id: str, channel, bot, bot_name: str,
     if not line:
         return ""
 
-    sent = await channel.send(line)
+    # The same rules as every other message the bot sends: a tag that
+    # is an address pings, a tag that is somebody being talked about is
+    # written out as their name, and the server-wide pings never get
+    # through.
+    from discord_utils import send_long
+
+    sent = await send_long(channel, line, render_math=False)
+    if not sent:
+        return ""
     note_proactive(channel_id, now)
     # Remember the subject, not just the sentence. The sentences change
     # and the subject does not - it is what she keeps coming back to.
