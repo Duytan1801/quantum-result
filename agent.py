@@ -315,6 +315,24 @@ def _check_delegation_tool() -> bool:
     return True
 
 
+async def _run_on_kaggle(code: str, user_id=None) -> str:
+    """Run a Python script on Kaggle and report what came of it.
+
+    The same per-user state directory as kaggle_run, so a script written
+    with the code tool leaves its files where the next run can pick them
+    up and where read_file can find them.
+    """
+    import kaggle_backend
+
+    state_dir = os.path.join(BASE_DIR, "kaggle", str(user_id or "default"))
+    result = await kaggle_backend.run_code(
+        code, timeout=600, state_dir=state_dir)
+    return kaggle_backend.format_output(
+        result,
+        state_rel=os.path.relpath(state_dir, BASE_DIR),
+    )
+
+
 async def _run_tool(name: str, args: dict, channel=None, user_id=None) -> str:
     """Execute one tool by name with already-parsed arguments."""
     if name == "wolfram_alpha":
@@ -326,19 +344,23 @@ async def _run_tool(name: str, args: dict, channel=None, user_id=None) -> str:
         # sandbox or to Kaggle's cloud compute.
         backend = getattr(config, "CODE_BACKEND", "both")
         if backend == "kaggle" and language == "python":
-            import kaggle_backend
-
-            # The same per-user state directory as kaggle_run, so a script
-            # written with the code tool leaves its files where the next run
-            # can pick them up and where read_file can find them.
-            state_dir = os.path.join(BASE_DIR, "kaggle", str(user_id or "default"))
-
-            result = await kaggle_backend.run_code(
-                code, timeout=600, state_dir=state_dir)
-            return kaggle_backend.format_output(
-                result,
-                state_rel=os.path.relpath(state_dir, BASE_DIR),
-            )
+            return await _run_on_kaggle(code, user_id)
+        if backend == "both" and language == "python":
+            # The fast sandbox is only there when Daytona is configured.
+            # Without a key it answers every call with "DAYTONA_API_KEY is
+            # not configured", which is the same as having no code tool at
+            # all - so Kaggle takes the run instead. It is slower, but it
+            # works, and it has the network the sandbox does not have.
+            if not getattr(config, "DAYTONA_API_KEY", ""):
+                return await _run_on_kaggle(code, user_id)
+        if language != "python" and not getattr(config, "DAYTONA_API_KEY", ""):
+            # Only Kaggle runs Python, so the other languages have nowhere
+            # to go. Say that, rather than "code execution is unavailable",
+            # which reads like the bot is broken.
+            return ("Error: only Python can be run right now - the sandbox "
+                    "that runs JavaScript, TypeScript and shell is not "
+                    "configured. Run it as Python, or use the kaggle_run "
+                    "tool.")
         return await run_code_in_sandbox(code, language)
     if name == "kaggle_run":
         import kaggle_backend
@@ -360,7 +382,10 @@ async def _run_tool(name: str, args: dict, channel=None, user_id=None) -> str:
         )
         # A script that wrote files gets them attached to the reply.
         for f in result.get("files") or []:
-            path = f.get("path")
+            # The copy in the state directory, not the temporary one the
+            # download landed in: that is the file that is still there
+            # when the reply is sent.
+            path = f.get("saved_path") or f.get("path")
             if path and os.path.exists(path) and not path.endswith(".log"):
                 try:
                     tracker = written_files.get()

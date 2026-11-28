@@ -28,7 +28,9 @@ import asyncio
 import base64
 import json
 import os
+import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -115,6 +117,11 @@ def kaggle_status() -> dict:
 
     Use this to debug: it checks the env var, the legacy key pair, the
     config file, and a live authentication attempt.
+
+    Two different questions are answered separately, because Kaggle
+    answers them separately: is the credential accepted at all, and is
+    it allowed to run kernels. A token that can read datasets but is
+    refused for kernels is a token that has to be re-issued.
     """
     token, name = _find_token()
     env_set = bool(os.getenv("KAGGLE_API_TOKEN"))
@@ -124,6 +131,7 @@ def kaggle_status() -> dict:
         "legacy_key_present": _has_legacy_key(),
         "config_file_present": _has_config_file(),
         "authenticated": False,
+        "kernels_allowed": False,
         "error": None,
     }
     if not token and not _has_legacy_key() and not _has_config_file():
@@ -135,8 +143,26 @@ def kaggle_status() -> dict:
         if client is None:
             report["error"] = _api_error or "authentication returned no client"
             return report
-        client.competitions_list()
-        report["authenticated"] = True
+
+        # Is the credential itself accepted? Reading the datasets is the
+        # cheapest call that does not touch the kernels service.
+        try:
+            client.dataset_list(search="titanic", max_size=1)
+            report["authenticated"] = True
+        except Exception as exc:
+            report["error"] = f"{type(exc).__name__}: {exc}"
+            return report
+
+        # And is it allowed to run kernels? That is a different service
+        # with a different answer.
+        try:
+            client.quota_view()
+            report["kernels_allowed"] = True
+        except Exception as exc:
+            if _is_auth_refusal(exc):
+                report["error"] = AUTH_REFUSED
+            else:
+                report["error"] = f"{type(exc).__name__}: {exc}"
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
     return report
@@ -144,12 +170,20 @@ def kaggle_status() -> dict:
 
 def _hint_from_status(report: dict) -> str:
     """Turn a kaggle_status() report into one prompt-sized line."""
-    if report.get("authenticated"):
+    if report.get("kernels_allowed"):
         source = report.get("credentials_source") or "unknown source"
         return (
             f"Kaggle is configured and working - live authentication succeeded "
             f"(credentials from {source}), so kaggle_run and kaggle_datasets "
             f"are available for heavy compute."
+        )
+    if report.get("authenticated"):
+        # The credential is fine, but the kernels service refuses it.
+        return (
+            "Kaggle credentials are accepted but are NOT allowed to run "
+            "kernels - the token has to be re-issued from the Kaggle "
+            "account settings with permission to run code. kaggle_run will "
+            "fail until it is; kaggle_datasets still works."
         )
     error = report.get("error") or "unknown error"
     return (
@@ -327,6 +361,175 @@ def _owner() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Datasets
+# ---------------------------------------------------------------------------
+#
+# A dataset is mounted by its full ref - "owner/slug" - and nothing else
+# works. A model asked for a dataset usually says "titanic" or
+# "imdb-movies", which is a name and not a ref, and a kernel pushed with
+# a name that does not exist comes up without the data it was supposed
+# to have.
+#
+# So a bare name is looked up and turned into a real ref. If there is no
+# dataset by that name, the run says so instead of coming up empty.
+
+def _find_dataset(name: str) -> str:
+    """The full ref of the dataset that matches this name."""
+    client = _kaggle_api()
+    if client is None:
+        return ""
+    want = (name or "").strip().lower()
+    if not want:
+        return ""
+    try:
+        response = _quiet(client.dataset_list, search=want)
+    except Exception as exc:
+        print(f"could not look the dataset up: {exc}")
+        return ""
+
+    best = ""
+    for d in _items(response, "datasets", "items"):
+        ref = getattr(d, "ref", "") or ""
+        slug = ref.split("/")[-1].lower()
+        title = (getattr(d, "title", "") or "").lower()
+        if slug == want or title == want:
+            return ref
+        if not best and (want in slug or want in title):
+            best = ref
+    return best
+
+
+def _resolve_datasets(refs: list) -> tuple[list, list]:
+    """Turn the dataset names into refs they can actually be mounted by.
+
+    Returns (refs, notes). The notes say what was changed and what could
+    not be found, so the model is told rather than left guessing.
+    """
+    resolved, notes = [], []
+    for ref in refs or []:
+        ref = str(ref).strip()
+        if not ref:
+            continue
+        if "/" in ref:
+            resolved.append(ref)
+            continue
+        found = _find_dataset(ref)
+        if found:
+            resolved.append(found)
+            notes.append(f"dataset '{ref}' is {found}")
+        else:
+            notes.append(f"no dataset called '{ref}' was found, so it was not mounted")
+    return resolved, notes
+
+
+# ---------------------------------------------------------------------------
+# The weekly quota
+# ---------------------------------------------------------------------------
+# A GPU run that has no quota left fails inside the kernel, with a
+# message about the quota rather than about the code. Better to say so
+# before the twenty seconds are spent.
+#
+# The same call answers another question: whether the credential is
+# allowed to run kernels at all. Kaggle's kernels service refuses a
+# token it does not recognise with a 401, while the datasets service
+# keeps working - so a token that can read datasets and cannot run a
+# kernel is a token that has to be re-issued, and the run is going to
+# fail however many times it is tried.
+
+AUTH_REFUSED = (
+    "Kaggle refused the credentials for kernel runs (401). The token can "
+    "still read datasets, but it is not accepted for running code - it has "
+    "to be re-issued from the Kaggle account settings with the permission "
+    "to run kernels, and KAGGLE_API_TOKEN updated. Nothing is wrong with "
+    "the script."
+)
+
+
+def _is_auth_refusal(exc: Exception) -> bool:
+    """Did Kaggle refuse the credential?"""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    if status == 401:
+        return True
+    text = str(exc).lower()
+    return "401" in text or "unauthenticated" in text or "unauthorized" in text
+
+
+def _seconds(text) -> int:
+    """Kaggle's durations - "3600s", "1h 2m 3s" - as seconds."""
+    if text is None:
+        return 0
+    if isinstance(text, (int, float)):
+        return int(text)
+    text = str(text).strip()
+    if not text:
+        return 0
+    total = 0
+    for value, unit in re.findall(r"(\d+(?:\.\d+)?)\s*([hms]?)", text):
+        value = float(value)
+        if unit == "h":
+            total += value * 3600
+        elif unit == "m":
+            total += value * 60
+        else:
+            total += value
+    return int(total)
+
+
+def _quota_data() -> tuple[dict, str]:
+    """The weekly quota, or a note about why there isn't any.
+
+    The quota comes from the kernels service, so a refusal here is the
+    credential being refused, not a quota problem.
+    """
+    client = _kaggle_api()
+    if client is None:
+        return {}, ""
+    try:
+        quota = _quiet(client.quota_view)
+        data = quota.to_dict() if hasattr(quota, "to_dict") else {}
+        return data, ""
+    except Exception as exc:
+        if _is_auth_refusal(exc):
+            return {}, AUTH_REFUSED
+        # Not knowing is not the same as knowing there is none left.
+        print(f"could not read the quota: {exc}")
+        return {}, ""
+
+
+def _quota_problem(accelerator: str) -> str:
+    """Why this accelerator cannot be used right now, or "" if it can."""
+    accelerator = (accelerator or "").strip().upper()
+    data, problem = _quota_data()
+    if problem:
+        return problem
+    if not accelerator:
+        return ""
+
+    if accelerator.startswith("NVIDIA"):
+        gpu = data.get("gpuQuota") or {}
+        used = _seconds(gpu.get("timeUsed"))
+        total = _seconds(gpu.get("totalTimeAllowed"))
+    elif accelerator.startswith("TPU"):
+        tpu = data.get("tpuQuota") or {}
+        used = _seconds(tpu.get("timeUsed"))
+        total = _seconds(tpu.get("totalTimeAllowed"))
+    else:
+        return ""
+
+    if total and used >= total:
+        kind = "GPU" if accelerator.startswith("NVIDIA") else "TPU"
+        return (f"the weekly {kind} quota is used up "
+                f"({used // 3600}h {used % 3600 // 60}m of "
+                f"{total // 3600}h {total % 3600 // 60}m), so a {kind} run "
+                f"would not start. Run it on the CPU, or wait for the "
+                f"quota to refresh.")
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Running code
 # ---------------------------------------------------------------------------
 def _metadata(slug: str, owner: str, accelerator: str, datasets: list,
@@ -478,19 +681,238 @@ def _save_outputs(files: list, state_dir: str) -> list[str]:
         if not os.path.isfile(path):
             continue
         try:
-            shutil.copy2(path, os.path.join(state_dir, name))
+            kept = os.path.join(state_dir, name)
+            shutil.copy2(path, kept)
+            # The copy is the path worth holding on to: the temporary
+            # directory the download landed in is not somewhere the bot
+            # should be sending files from.
+            f["saved_path"] = kept
             saved.append(name)
         except Exception:
             pass
     return saved
 
 
+# ---------------------------------------------------------------------------
+# pip install
+# ---------------------------------------------------------------------------
+#
+# A script that installs a package and then imports it works. A script
+# that imports it at the top and installs it ten lines down does not -
+# the import runs first, and the script is over before the install
+# finishes. Models write it that way all the time, because it reads
+# naturally:
+#
+#     import cowsay
+#     ...
+#     subprocess.run([sys.executable, "-m", "pip", "install", "cowsay"])
+#
+# So the packages the script asks for are installed before the script
+# runs, and the script's own install line is left alone - running it
+# again is a few seconds, and it is the script's business.
+#
+# The install is done with the same interpreter the script runs under,
+# because a kernel can have more than one Python on it and installing
+# into the wrong one is the kind of thing that works on your machine
+# and nowhere else.
+
+_PIP_LINE = re.compile(
+    r"(?:^|\n)[ \t]*(?:![ \t]*)?"
+    r"(?:(?:python3?|sys\.executable)[ \t]+-m[ \t]+)?"
+    r"pip3?[ \t]+install[ \t]+(?P<args>[^\n]*)",
+    re.IGNORECASE)
+
+# The same thing written as a subprocess call:
+#     subprocess.run([sys.executable, "-m", "pip", "install", "cowsay"])
+_PIP_LIST = re.compile(
+    r"[\"']pip3?[\"'][ \t]*,[ \t]*[\"']install[\"'][ \t]*(?P<args>[^\]]*)",
+    re.IGNORECASE)
+
+# The flags that are not package names.
+_PIP_FLAGS = {"-q", "--quiet", "--no-cache-dir", "--upgrade", "-U",
+              "--user", "--disable-pip-version-check", "--no-input",
+              "--force-reinstall", "--pre"}
+
+
+def _pip_args(text: str) -> list[str]:
+    """The arguments of an install command, as a list."""
+    parts = [p.strip().strip("\"'") for p in (text or "").split()]
+    return [p for p in parts if p]
+
+
+def _pip_packages(code: str) -> list[list[str]]:
+    """Every package the script asks to install, as argument lists."""
+    found = []
+    for match in _PIP_LINE.finditer(code or ""):
+        args = _pip_args(match.group("args"))
+        if args:
+            found.append(args)
+    for match in _PIP_LIST.finditer(code or ""):
+        args = [a.strip().strip("\"'")
+                for a in re.findall(r"[\"']([^\"']*)[\"']", match.group("args"))]
+        if args:
+            found.append(args)
+    # The same package twice is one install.
+    unique = []
+    for args in found:
+        names = [a for a in args if a not in _PIP_FLAGS]
+        if not names:
+            continue
+        key = " ".join(sorted(names)).lower()
+        if any(" ".join(sorted(n for n in a if n not in _PIP_FLAGS)).lower() == key
+               for a in unique):
+            continue
+        unique.append(args)
+    return unique
+
+
+# ---------------------------------------------------------------------------
+# Missing packages
+# ---------------------------------------------------------------------------
+#
+# A script that imports a package and never installs it dies with:
+#
+#     ModuleNotFoundError: No module named 'cowsay'
+#
+# which is the other half of the pip problem: the preamble handles the
+# packages the script installs, and this handles the ones it forgets to.
+# The name in the error is the import name, which is not always the
+# name on PyPI - "sklearn" is "scikit-learn", "cv2" is "opencv-python",
+# "PIL" is "pillow". The ones worth knowing are listed; the rest are
+# tried under their own name, which is right most of the time.
+
+_MODULE_TO_PACKAGE = {
+    "sklearn": "scikit-learn",
+    "skimage": "scikit-image",
+    "cv2": "opencv-python",
+    "PIL": "pillow",
+    "yaml": "pyyaml",
+    "bs4": "beautifulsoup4",
+    "dateutil": "python-dateutil",
+    "dotenv": "python-dotenv",
+    "serial": "pyserial",
+    "jwt": "pyjwt",
+    "Crypto": "pycryptodome",
+    "fitz": "pymupdf",
+    "psycopg2": "psycopg2-binary",
+    "pkg_resources": "setuptools",
+    "attr": "attrs",
+    "OpenSSL": "pyopenssl",
+    "usb": "pyusb",
+    "zmq": "pyzmq",
+    "discord": "discord.py",
+    "google": "protobuf",
+    "mysql": "mysql-connector-python",
+    "pymysql": "pymysql",
+    "magic": "python-magic",
+    "docx": "python-docx",
+    "pptx": "python-pptx",
+    "Xlib": "python-xlib",
+    "win32api": "pywin32",
+    "vlc": "python-vlc",
+    "git": "GitPython",
+    "toml": "toml",
+    "yaml": "pyyaml",
+}
+
+# The modules that come with Python itself. Installing them is a waste
+# of twenty seconds and always fails.
+_STDLIB = set(getattr(sys, "stdlib_module_names", ())) | {
+    "os", "sys", "re", "json", "math", "time", "datetime", "random",
+    "collections", "itertools", "functools", "typing", "pathlib", "csv",
+    "subprocess", "asyncio", "base64", "hashlib", "urllib", "sqlite3",
+    "statistics", "string", "textwrap", "shutil", "tempfile", "logging",
+    "unittest", "argparse", "inspect", "copy", "enum", "dataclasses",
+    "concurrent", "threading", "multiprocessing", "pickle", "struct",
+    "decimal", "fractions", "uuid", "platform", "socket", "ssl", "email",
+    "http", "urllib3", "zlib", "gzip", "tarfile", "zipfile", "io", "abc",
+    "contextlib", "warnings", "traceback", "builtins", "__future__",
+}
+
+
+def _missing_modules(stderr: str) -> list[str]:
+    """The modules the script could not find."""
+    found = []
+    for match in re.finditer(
+            r"ModuleNotFoundError: No module named ['\"]([^'\"]+)['\"]",
+            stderr or ""):
+        name = match.group(1).strip()
+        if not name or name in found:
+            continue
+        found.append(name)
+    return found
+
+
+def _packages_for(modules: list) -> list[str]:
+    """The pip names for the modules the script could not find."""
+    packages = []
+    for name in modules or []:
+        # "google.protobuf" is the package "protobuf", and "a.b.c" is
+        # the package "a" - the import name is the first part.
+        top = name.split(".")[0]
+        if not top or top.startswith("_") or top in _STDLIB:
+            continue
+        package = _MODULE_TO_PACKAGE.get(top, top)
+        if package not in packages:
+            packages.append(package)
+    return packages
+
+
+def _pip_preamble(code: str, extra: list = None) -> tuple[str, list[list[str]]]:
+    """The preamble that installs what the script is going to import."""
+    specs = _pip_packages(code)
+    for args in extra or []:
+        # The extra packages can come as a list of names or as a list of
+        # argument lists - one "cowsay" and not five letters.
+        if isinstance(args, str):
+            args = [args]
+        args = [str(a).strip() for a in args if str(a).strip()]
+        if not args:
+            continue
+        if not any(
+                " ".join(sorted(a for a in args if a not in _PIP_FLAGS)).lower()
+                == " ".join(sorted(a for a in s if a not in _PIP_FLAGS)).lower()
+                for s in specs):
+            specs.append(list(args))
+    if not specs:
+        return "", []
+
+    payload = json.dumps(specs)
+    preamble = (
+        "# Installed before the script runs, because the script imports\n"
+        "# these at the top and installs them further down.\n"
+        "import subprocess, sys\n"
+        f"_bot_pip_specs = {payload}\n"
+        "for _bot_pip_args in _bot_pip_specs:\n"
+        "    print('[bot] pip install ' + ' '.join(_bot_pip_args), flush=True)\n"
+        "    _bot_pip = subprocess.run(\n"
+        "        [sys.executable, '-m', 'pip', 'install',\n"
+        "         '--disable-pip-version-check'] + _bot_pip_args,\n"
+        "        capture_output=True, text=True)\n"
+        "    print('[bot] pip exit ' + str(_bot_pip.returncode), flush=True)\n"
+        "    if _bot_pip.returncode:\n"
+        "        print('[bot] pip said: ' + ((_bot_pip.stderr or\n"
+        "              _bot_pip.stdout or '')[-800:]), flush=True)\n"
+    )
+    return preamble, specs
+
+
 def _run_sync(code: str, timeout: int, accelerator: str, datasets: list,
-              label: str, state_dir: str = "") -> dict:
+              label: str, state_dir: str = "", extra_installs: list = None) -> dict:
     """Push a script to Kaggle, wait for it, and collect the output."""
     client = _kaggle_api()
     if client is None:
         return {"error": _api_error or NOT_CONFIGURED}
+
+    # A GPU or TPU run that has no quota left fails inside the kernel.
+    # Better to say so here, before the twenty seconds are spent.
+    problem = _quota_problem(accelerator)
+    if problem:
+        return {"error": problem}
+
+    # A dataset is mounted by its full ref. A bare name is looked up, so
+    # "titanic" becomes the ref it stands for.
+    datasets, dataset_notes = _resolve_datasets(datasets)
 
     owner = _owner()
     slug = None
@@ -508,8 +930,13 @@ def _run_sync(code: str, timeout: int, accelerator: str, datasets: list,
         # The last run's files go along, so the script can build on them
         # instead of starting from nothing.
         preamble, carried = _carry_preamble(state_dir)
+
+        # What the script wants to install goes in before the script, for
+        # the reason in _pip_preamble: the script imports it at the top.
+        install, installs = _pip_preamble(code, extra_installs)
+
         with open(os.path.join(work, "main.py"), "w") as fh:
-            fh.write(preamble + code)
+            fh.write(preamble + install + code)
 
         ref = f"{owner}/{slug}" if owner else slug
 
@@ -524,6 +951,11 @@ def _run_sync(code: str, timeout: int, accelerator: str, datasets: list,
                 acc=accelerator or None,
             )
         except Exception as exc:
+            # A refused credential is not worth retrying: the token has
+            # to be re-issued, and saying so is more use than the URL
+            # that came back.
+            if _is_auth_refusal(exc):
+                return {"error": AUTH_REFUSED}
             # A 409 Conflict means the kernel slug already exists (stale kernel
             # from a previous run that wasn't cleaned up properly).
             # Delete the old one and retry once.
@@ -539,6 +971,8 @@ def _run_sync(code: str, timeout: int, accelerator: str, datasets: list,
                         acc=accelerator or None,
                     )
                 except Exception as exc2:
+                    if _is_auth_refusal(exc2):
+                        return {"error": AUTH_REFUSED}
                     return {"error": f"could not push to Kaggle even after cleanup: {exc2}"}
             else:
                 return {"error": f"could not push to Kaggle: {exc}"}
@@ -583,6 +1017,17 @@ def _run_sync(code: str, timeout: int, accelerator: str, datasets: list,
                 break
             time.sleep(3)
 
+        # Still running when the wait ran out. A kernel left running
+        # holds its slot in the pool - and the next run pushed to the same
+        # slug cancels it - so it is deleted rather than left behind.
+        timed_out = state not in ("COMPLETE", "ERROR", "CANCELLED", "CANCELED")
+        if timed_out:
+            try:
+                client.kernels_delete(ref)
+            except Exception as exc:
+                print(f"could not stop the kernel {ref}: {exc}")
+            state = "TIMEOUT"
+
         elapsed = time.time() - t0
 
         # The logs come back as a list of {stream_name, time, data}.
@@ -616,16 +1061,33 @@ def _run_sync(code: str, timeout: int, accelerator: str, datasets: list,
         # Keep the files so the next run has them and the user can read them.
         saved = _save_outputs(files, state_dir)
 
+        # What went wrong, when the kernel could not reach the network.
+        # A script that downloads something and cannot is a different
+        # problem from a script with a bug in it, and the difference is
+        # worth stating.
+        network_note = ""
+        stderr_text = "".join(stderr)
+        if state != "COMPLETE" and _looks_like_no_network(stderr_text):
+            network_note = (
+                "the kernel could not reach the network, so anything that "
+                "downloads or installs failed. Kaggle kernels need internet "
+                "access turned on; this one did not have it."
+            )
+
         return {
             "stdout": "".join(stdout),
-            "stderr": "".join(stderr),
+            "stderr": stderr_text,
             "files": files,
             "saved": saved,
             "carried": carried,
+            "installed": [" ".join(spec) for spec in installs],
+            "dataset_notes": dataset_notes,
+            "network_note": network_note,
             "state": state,
             "status": state,
             "success": state == "COMPLETE" and not failure,
             "failure": failure,
+            "timed_out": timed_out,
             "elapsed": round(elapsed, 1),
             "push_seconds": round(pushed, 2),
             "ref": ref,
@@ -672,6 +1134,39 @@ async def run_code(code: str, timeout: int = 600, accelerator: str = "",
             )
             # Success: reset circuit breaker
             _reset_circuit("kaggle")
+
+            # The script died because a package was missing and it never
+            # asked for it. Install it and run the script again - once,
+            # so a script that is simply broken does not loop.
+            if (result.get("state") == "ERROR"
+                    and not result.get("timed_out")
+                    and not result.get("extra_install_note")):
+                missing = _missing_modules(result.get("stderr") or "")
+                packages = _packages_for(missing)
+                if packages:
+                    note = (f"the script was missing {', '.join(packages)}, so "
+                            "it was installed and the script was run again")
+                    print(f"[kaggle] {note}")
+                    try:
+                        again = await asyncio.to_thread(
+                            _run_sync, code, timeout, accelerator or "",
+                            datasets or [], label, state_dir, packages,
+                        )
+                    except Exception as exc:
+                        print(f"[kaggle] the retry failed: {exc}")
+                        again = {}
+                    if again:
+                        again["extra_install_note"] = note
+                        again["installed"] = list(again.get("installed") or []) + packages
+                        again["extra_installed"] = packages
+                        # The first failure is worth keeping: if the retry
+                        # fails for a different reason, the two together
+                        # say more than either alone.
+                        again["first_error"] = {
+                            "stderr": (result.get("stderr") or "")[-2000:],
+                            "state": result.get("state"),
+                        }
+                        result = again
             return result
         except RuntimeError as exc:
             if "busy" not in str(exc):
@@ -698,6 +1193,26 @@ _NOISE = (
     "cells[i][c]",
     "text = re.sub",
 )
+
+# What a kernel that cannot reach the network says.
+_NO_NETWORK = (
+    "temporary failure in name resolution",
+    "name or service not known",
+    "connection refused",
+    "connection reset",
+    "network is unreachable",
+    "could not resolve host",
+    "max retries exceeded",
+    "ssl: wrong_version_number",
+    "proxyerror",
+    "network is unreachable",
+)
+
+
+def _looks_like_no_network(text: str) -> bool:
+    """Did this fail because the kernel had no internet?"""
+    low = (text or "").lower()
+    return any(marker in low for marker in _NO_NETWORK)
 
 
 """Circuit breaker pattern for external service resilience."""
@@ -762,11 +1277,19 @@ def format_output(result: dict, max_chars: int = 8000, state_rel: str = "") -> s
         return f"Error: {result['error']}"
 
     parts = []
+    if result.get("installed"):
+        parts.append("[installed before the run] " + ", ".join(result["installed"]))
+    if result.get("extra_install_note"):
+        parts.append(f"[what happened] {result['extra_install_note']}")
+    if result.get("dataset_notes"):
+        parts.append("[datasets] " + "; ".join(result["dataset_notes"]))
     if result.get("stdout"):
         parts.append(result["stdout"].strip())
     stderr = _clean_stderr(result.get("stderr") or "")
     if stderr:
         parts.append(f"[stderr]\n{stderr}")
+    if result.get("network_note"):
+        parts.append(f"[the problem] {result['network_note']}")
     saved = set(result.get("saved") or [])
     for f in result.get("files") or []:
         if f["name"].endswith(".log"):
@@ -784,10 +1307,19 @@ def format_output(result: dict, max_chars: int = 8000, state_rel: str = "") -> s
         )
     if result.get("failure"):
         parts.append(f"[failed] {result['failure']}")
+    elif result.get("timed_out"):
+        parts.append(
+            f"[the script was still running after {result.get('elapsed')} "
+            "seconds and was stopped]")
     elif result.get("state") and result["state"] not in ("COMPLETE",):
         # The kernel stopped without saying why - say that much rather than
         # let it look like the script simply printed nothing.
         parts.append(f"[the kernel ended with status {result['state']}]")
+    first = result.get("first_error")
+    if first and first.get("stderr"):
+        parts.append(
+            "[the first attempt, before the missing package was installed]\n"
+            + first["stderr"][-1200:].strip())
     if result.get("success") is False and not result.get("error"):
         parts.append("[the run did not finish successfully]")
 
@@ -909,6 +1441,8 @@ def _quota_sync() -> dict:
         quota = _quiet(client.quota_view)
         data = quota.to_dict() if hasattr(quota, "to_dict") else {}
     except Exception as exc:
+        if _is_auth_refusal(exc):
+            return {"error": AUTH_REFUSED}
         return {"error": str(exc)}
     gpu = data.get("gpuQuota") or {}
     tpu = data.get("tpuQuota") or {}

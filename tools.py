@@ -585,7 +585,10 @@ TOOLS = [
                 "wolfram_alpha tool instead. For heavy work - training a "
                 "model, or fitting something over a real dataset - use "
                 "kaggle_run instead: it is slower but has numpy, pandas, "
-                "PyTorch and a GPU."
+                "PyTorch and a GPU.\n"
+                "The sandbox has no network access, so a script that "
+                "downloads something or installs a package fails there. Use "
+                "kaggle_run for those."
             ),
             "parameters": {
                 "type": "object",
@@ -613,6 +616,14 @@ TOOLS = [
                 "API, pip installing a package. The code tool's sandbox has no "
                 "network, so if a script there failed on a connection, run it "
                 "here instead.\n"
+                "PACKAGES: if the script installs a package with pip, it is "
+                "installed before the script runs, so importing it at the top "
+                "of the script works. Nothing else needs to be done.\n"
+                "FILES: write the files the script produces into "
+                "/kaggle/working (the working directory - a relative path is "
+                "fine). Files written anywhere else are not collected. The "
+                "files are downloaded, attached to the reply, and kept for the "
+                "next run, so a later run can read them with read_file.\n"
                 "It takes about 20-30 seconds per run, so prefer the code tool "
                 "for quick snippets and use this one when the job is genuinely "
                 "heavy. The script's stdout is returned, along with any files it "
@@ -629,9 +640,10 @@ TOOLS = [
                         "type": "array",
                         "items": {"type": "string"},
                         "description": (
-                            "Kaggle dataset refs to mount, e.g. "
-                            "['titanic', 'user/dataset-slug']. They appear at "
-                            "/kaggle/input/<ref>/."
+                            "Kaggle datasets to mount, by their full ref - "
+                            "'owner/dataset-slug'. A bare name like 'titanic' "
+                            "is looked up and mounted if it can be found. They "
+                            "appear at /kaggle/input/<ref>/."
                         ),
                     },
                     "accelerator": {
@@ -639,7 +651,8 @@ TOOLS = [
                         "description": (
                             "Empty for CPU (free and unlimited). 'NvidiaTeslaT4' "
                             "or 'NvidiaH100' for a GPU, 'TpuV5E8' for a TPU. GPU "
-                            "and TPU time come out of a weekly quota."
+                            "and TPU time come out of a weekly quota - if the "
+                            "quota is used up, the run on the CPU instead."
                         ),
                         "default": "",
                     },

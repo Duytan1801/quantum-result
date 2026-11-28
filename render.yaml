@@ -25,20 +25,20 @@ services:
       # The proactive half of the bot, written out rather than left to the
       # defaults: a stale value in the dashboard is enough to keep it
       # silent, and silent is the failure nobody notices. No cap, no quiet
-      # hours, a minute of silence is enough, and nothing is off for being
-      # a day old.
+      # hours, two minutes of silence is enough, a line every ten minutes
+      # at most, and nothing is off for being a day old.
       - key: PROACTIVE_ENABLED
         value: "1"
       - key: PROACTIVE_TICK_SECONDS
         value: "60"
       - key: PROACTIVE_MIN_IDLE_SECONDS
-        value: "60"
+        value: "120"
       - key: PROACTIVE_MIN_GAP_MINUTES
-        value: "2"
+        value: "10"
       - key: PROACTIVE_MAX_PER_DAY
         value: "0"
       - key: PROACTIVE_MAX_IDLE_MINUTES
-        value: "0"
+        value: "1440"
       - key: PROACTIVE_QUIET_HOURS
         value: ""
       - key: DISCORD_TOKEN
@@ -49,6 +49,15 @@ services:
         value: minimaxai/minimax-m3.1-flash
       - key: NVIDIA_MODEL
         value: nvidia/nemotron-3.5-super-vl-120b-a12b
+      # The second vision model, behind the Super VL in the chain.
+      - key: STEP5_MODEL
+        value: stepfun-ai/step-5-preview
+      # Where the plain code tool runs. "both" means the fast sandbox when
+      # there is a Daytona key and Kaggle's cloud compute when there is
+      # not - without this the code tool answers every call with "not
+      # configured" on the deployment.
+      - key: CODE_BACKEND
+        value: both
       - key: GROQ_API_KEY
         sync: false
       - key: GROQ_MODEL

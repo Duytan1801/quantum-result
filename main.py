@@ -34,6 +34,7 @@ from presence import ChannelTracker, WAIT_SECONDS, channel_scope, decide
 from scopes import scope_plan
 from config import (ANSWER_RETRY_ATTEMPTS, ANSWER_RETRY_DELAY,
                     NEWS_CHANNEL_ID, NEWS_MAX_AGE_HOURS, is_detached)
+import config
 from sandbox import run_code_in_sandbox
 from storage import (
     db_clear_room_model,
@@ -444,18 +445,34 @@ def keep_alive():
 # ---------------------------------------------------------------------------
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
+# Discord's own limit for a file from a bot without a boosted server.
+# A file over it is not sent - the name and the size are posted instead,
+# so the person knows what came out of the run.
+ATTACH_MAX_BYTES = 8 * 1024 * 1024
+
 
 async def attach_images(target, files: list, caption: str = None):
-    """Attach images the agent produced during its turn."""
-    images = [f for f in (files or []) if f.lower().endswith(IMAGE_SUFFIXES)]
-    if not images:
+    """Attach the files the agent produced during its turn.
+
+    Not only the images. A script that writes a CSV has produced
+    something worth having, and the person who asked for it cannot use a
+    file that was downloaded, kept on the bot's disk and never sent.
+    """
+    items = [f for f in (files or []) if f and os.path.exists(f)]
+    if not items:
         return
     sender = target.send if hasattr(target, "send") else target.channel.send
-    for path in images:
+    for path in items:
+        name = os.path.basename(path)
         try:
+            size = os.path.getsize(path)
+            if size > ATTACH_MAX_BYTES:
+                await sender(f"⚠️ {name} is {size // 1024 // 1024} MB, which is "
+                             f"over what I can send here.")
+                continue
             await sender(file=discord.File(path))
         except Exception as exc:
-            await sender(f"⚠️ Could not attach {os.path.basename(path)}: {exc}")
+            await sender(f"⚠️ Could not attach {name}: {exc}")
 
 
 @bot.command(name="ask")
@@ -481,9 +498,29 @@ async def ask(ctx, *, question: str):
 
 @bot.command(name="run")
 async def run_code(ctx, language: str = "python", *, code: str):
+    """Run a snippet. Usage: !run python print("hello")"""
+    files = []
     async with ctx.typing():
-        result = await run_code_in_sandbox(code, language)
-    await send_long(ctx, result, code_block=True)
+        if language.lower() in ("python", "python3", "py") \
+                and not getattr(config, "DAYTONA_API_KEY", ""):
+            # The fast sandbox is only there when Daytona is configured.
+            # Without it, Kaggle runs the snippet - slower, but it works,
+            # and it has the network the sandbox does not have.
+            import kaggle_backend
+
+            state_dir = os.path.join(BASE_DIR, "kaggle", str(ctx.author.id))
+            result = await kaggle_backend.run_code(
+                code, timeout=600, state_dir=state_dir)
+            text = kaggle_backend.format_output(
+                result, state_rel=os.path.relpath(state_dir, BASE_DIR))
+            files = [f.get("saved_path") or f.get("path")
+                     for f in result.get("files") or []
+                     if not (f.get("name") or "").endswith(".log")]
+        else:
+            text = await run_code_in_sandbox(code, language)
+    await send_long(ctx, text, code_block=True)
+    if files:
+        await attach_images(ctx, [f for f in files if f and os.path.exists(f)])
 
 
 @bot.command(name="search")
@@ -779,10 +816,14 @@ async def test_piston(ctx):
 @bot.command(name="kaggle")
 async def kaggle_cmd(ctx):
     """Check whether Kaggle cloud compute is configured. Usage: !kaggle"""
+    import kaggle_backend
     from kaggle_backend import force_refresh, kaggle_status
 
-    force_refresh()
-    status = kaggle_status()
+    async with ctx.typing():
+        force_refresh()
+        status = kaggle_status()
+        quota = await kaggle_backend.quota()
+
     lines = [f"**Kaggle status**"]
     lines.append(f"- Env var `KAGGLE_API_TOKEN` set: {status['env_KAGGLE_API_TOKEN_set']}")
     lines.append(f"- Credentials source: {status['credentials_source'] or 'none'}")
@@ -790,9 +831,55 @@ async def kaggle_cmd(ctx):
     lines.append(f"- Legacy key pair present: {status['legacy_key_present']}")
     lines.append(f"- Config file present: {status['config_file_present']}")
     if status["authenticated"]:
-        lines.append("- Live authentication: **OK** — Kaggle is ready to run scripts.")
+        lines.append("- Live authentication: **OK** — the credential is accepted.")
     else:
         lines.append(f"- Live authentication: **failed** — {status['error']}")
+
+    if status.get("kernels_allowed"):
+        lines.append("- Running kernels: **OK** — scripts can be pushed and run.")
+    elif status.get("authenticated"):
+        lines.append("- Running kernels: **refused** — the credential can read "
+                     "datasets but is not accepted for running code. It has to "
+                     "be re-issued from the Kaggle account settings with the "
+                     "permission to run kernels, and `KAGGLE_API_TOKEN` updated.")
+    else:
+        lines.append("- Running kernels: unknown — the credential itself failed.")
+
+    if quota:
+        if quota.get("error"):
+            lines.append(f"- GPU this week: unknown — {quota['error']}")
+        else:
+            lines.append(f"- GPU this week: {quota.get('gpu_used', '?')} of "
+                         f"{quota.get('gpu_total', '?')}")
+            lines.append(f"- TPU this week: {quota.get('tpu_used', '?')} of "
+                         f"{quota.get('tpu_total', '?')}")
+    elif status.get("authenticated"):
+        lines.append("- GPU this week: unknown — the quota comes from the same "
+                     "service that refuses the kernel runs.")
+
+    # Where the code tool sends its work, and what is waiting to be picked
+    # up - the two things that are otherwise invisible until a run fails.
+    backend = getattr(config, "CODE_BACKEND", "both")
+    daytona = bool(getattr(config, "DAYTONA_API_KEY", ""))
+    lines.append(f"- Code tool backend: `{backend}`"
+                 + ("" if daytona else " (no Daytona key, so Python runs on Kaggle)"))
+
+    state_root = os.path.join(BASE_DIR, "kaggle")
+    kept = []
+    if os.path.isdir(state_root):
+        for user in sorted(os.listdir(state_root)):
+            folder = os.path.join(state_root, user)
+            if not os.path.isdir(folder):
+                continue
+            names = [n for n in os.listdir(folder)
+                     if os.path.isfile(os.path.join(folder, n))]
+            if names:
+                kept.append(f"{user}: {', '.join(names[:6])}")
+    if kept:
+        lines.append(f"- Files waiting: {'; '.join(kept[:6])}")
+    else:
+        lines.append("- Files waiting: none")
+
     await send_long(ctx, "\n".join(lines))
 
 
