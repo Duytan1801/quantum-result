@@ -89,12 +89,33 @@ kaggle_run({
 
 Datasets are mounted at `/kaggle/input/<ref>/`.
 
+### What the backend does about the things that go wrong
+
+Running a script on somebody else's cloud goes wrong in a small number of
+predictable ways, and each one is handled rather than reported as a mystery:
+
+| The problem | What happens now |
+|---|---|
+| The script imports a package and installs it ten lines further down | The packages the script installs are installed **before** the script runs, so importing at the top works. |
+| The script imports a package and never installs it | The `ModuleNotFoundError` is read back, the package is installed (`sklearn` → `scikit-learn`, `cv2` → `opencv-python`, and so on), and the script is run again - once. |
+| The script writes a file | The file is downloaded, kept for the next run, and **attached to the reply**. Any file type, not just images. |
+| The script names a dataset `titanic` | The bare name is looked up and mounted by its real ref. If there is no such dataset, the run says so instead of coming up empty. |
+| The GPU quota is used up | The run says so before the twenty seconds are spent, and names the CPU as the way through. |
+| The script runs past the timeout | The kernel is deleted, so it does not hold its slot in the pool. |
+| The kernel has no network | The run says the network was the problem, rather than showing a connection error as if it were the script's. |
+| The credential is refused | The run stops in a second and says the token has to be re-issued - it is not the script's fault and retrying will not help. |
+
+Write the files a script produces into `/kaggle/working` (a relative path is
+fine). Files written anywhere else are not collected.
+
 ### Choosing the backend
 
 `CODE_BACKEND` decides what the plain `code` tool does:
 
-- `both` (the default) - the model chooses per call, which is usually what you
-  want: the sandbox for snippets, Kaggle for real work;
+- `both` (the default) - the fast sandbox when `DAYTONA_API_KEY` is set, and
+  Kaggle when it is not. Without a Daytona key the sandbox can only answer
+  "not configured", so Kaggle takes the run instead: slower, but it works,
+  and it has the network the sandbox does not have;
 - `daytona` - always the sandbox, at ~0.3s a call;
 - `kaggle` - always Kaggle, at ~21s a call, but with the full data-science
   environment and a GPU.
@@ -102,6 +123,11 @@ Datasets are mounted at `/kaggle/input/<ref>/`.
 Setup: put a Kaggle API token (the new `KGAT_...` kind) in `KAGGLE_API_TOKEN`,
 or the legacy `~/.kaggle/kaggle.json`. The account needs a verified phone
 number before GPU access works.
+
+The token needs permission to **run kernels**, not just to read datasets -
+Kaggle answers those two questions separately, and a token with only the
+second will read datasets happily and refuse every script. `!kaggle` in
+Discord says which of the two it has.
 
 ## Diagrams
 
@@ -432,8 +458,8 @@ answered directly without starting a job.
 | `EMBED_MODEL` | no | Embedding model for semantic memory — defaults to `nvidia/nemotron-3.5-embed-1b` |
 | `MEMORY_MIN_SCORE` | no | Relevance floor for memory retrieval — defaults to `0.15` |
 | `NODE_BINARY` | no | Path to `node` if it is not on `PATH` (needed for math rendering) |
-| `KAGGLE_API_TOKEN` | no | Kaggle API token — enables the Kaggle compute and dataset tools |
-| `CODE_BACKEND` | no | Which backend the `code` tool uses: `daytona`, `kaggle` or `both` (default) |
+| `KAGGLE_API_TOKEN` | no | Kaggle API token — enables the Kaggle compute and dataset tools. It must be allowed to run kernels, not just to read datasets |
+| `CODE_BACKEND` | no | Which backend the `code` tool uses: `daytona`, `kaggle` or `both` (default). `both` means the sandbox when `DAYTONA_API_KEY` is set and Kaggle when it is not |
 
 \* At least one of `NVIDIA_API_KEY` or `GROQ_API_KEY` must be set. If both are
 present, NVIDIA is used first and Groq takes over if NVIDIA errors.
