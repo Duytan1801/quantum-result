@@ -579,16 +579,19 @@ TOOLS = [
         "function": {
             "name": "code",
             "description": (
-                "Execute code in a fast sandbox (well under a second). Use for "
-                "data processing, string/file work, or algorithms on data you "
-                "already have. For pure math and symbolic computation, use the "
-                "wolfram_alpha tool instead. For heavy work - training a "
-                "model, or fitting something over a real dataset - use "
-                "kaggle_run instead: it is slower but has numpy, pandas, "
-                "PyTorch and a GPU.\n"
-                "The sandbox has no network access, so a script that "
-                "downloads something or installs a package fails there. Use "
-                "kaggle_run for those."
+                "Execute code. Use for data processing, string/file work, or "
+                "algorithms on data you already have. For pure math and "
+                "symbolic computation, use the wolfram_alpha tool instead. "
+                "For heavy work - training a model, or fitting something over "
+                "a real dataset - use kaggle_run instead: it has a GPU.\n"
+                "It runs on the fast sandbox where one is configured, and on "
+                "Kaggle otherwise, so a script that downloads something or "
+                "installs a package works here too. A package the script "
+                "installs is installed before the script runs, so importing "
+                "it at the top works.\n"
+                "FILES: write what the script produces into /kaggle/working "
+                "(a relative path is fine) and the files are collected, kept "
+                "for the next run, and attached to the reply."
             ),
             "parameters": {
                 "type": "object",
@@ -618,7 +621,9 @@ TOOLS = [
                 "here instead.\n"
                 "PACKAGES: if the script installs a package with pip, it is "
                 "installed before the script runs, so importing it at the top "
-                "of the script works. Nothing else needs to be done.\n"
+                "of the script works. Nothing else needs to be done. If the "
+                "script imports a package it never installs, the missing one "
+                "is installed and the script is run again.\n"
                 "FILES: write the files the script produces into "
                 "/kaggle/working (the working directory - a relative path is "
                 "fine). Files written anywhere else are not collected. The "
