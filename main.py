@@ -381,7 +381,10 @@ def proactive_status():
         out.append(f"enabled: {PROACTIVE_ENABLED}  tick: {PROACTIVE_TICK_SECONDS}s  "
                    f"idle: {PROACTIVE_MIN_IDLE_SECONDS}s  gap: {PROACTIVE_MIN_GAP_MINUTES}m")
         out.append(f"quiet hours: {PROACTIVE_QUIET_HOURS or 'none'}  "
-                   f"max idle: {PROACTIVE_MAX_IDLE_MINUTES or 'none'}m")
+                   f"max idle: {PROACTIVE_MAX_IDLE_MINUTES} minutes"
+                   if PROACTIVE_MAX_IDLE_MINUTES else
+                   f"quiet hours: {PROACTIVE_QUIET_HOURS or 'none'}  "
+                   f"max idle: none")
     except Exception as exc:
         out.append(f"settings: FAILED ({exc})")
 
@@ -1092,7 +1095,13 @@ def _start_tick():
           f"idle {PROACTIVE_MIN_IDLE_SECONDS}s, "
           f"gap {PROACTIVE_MIN_GAP_MINUTES}m, "
           f"quiet hours {PROACTIVE_QUIET_HOURS or 'none'}, "
-          f"max idle {PROACTIVE_MAX_IDLE_MINUTES or 'none'} minutes")
+          f"max idle {PROACTIVE_MAX_IDLE_MINUTES} minutes"
+          if PROACTIVE_MAX_IDLE_MINUTES else
+          f"proactive: tick every {PROACTIVE_TICK_SECONDS}s, "
+          f"idle {PROACTIVE_MIN_IDLE_SECONDS}s, "
+          f"gap {PROACTIVE_MIN_GAP_MINUTES}m, "
+          f"quiet hours {PROACTIVE_QUIET_HOURS or 'none'}, "
+          f"max idle none")
 
     if not PROACTIVE_ENABLED:
         print("proactive ticking: disabled")

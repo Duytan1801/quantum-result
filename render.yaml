@@ -37,8 +37,10 @@ services:
         value: "10"
       - key: PROACTIVE_MAX_PER_DAY
         value: "0"
+      # 0 means no cap: nothing is switched off for the room being quiet
+      # for a day.
       - key: PROACTIVE_MAX_IDLE_MINUTES
-        value: "1440"
+        value: "0"
       - key: PROACTIVE_QUIET_HOURS
         value: ""
       - key: DISCORD_TOKEN
